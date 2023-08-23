@@ -288,8 +288,16 @@ impl LifecycleNodeBuilder {
 
             // Get Avaliable Transitions
             {
+                let state_machine_ptr = state_machine.clone();
                 lifecycle_node.create_service::<GetAvailableTransitions, _>("get_available_transitions", move |header, req| {
-                    state_machine.on_get_available_transitions(header, &req)
+                    state_machine_ptr.on_get_available_transitions(header, &req)
+                })?;
+            }
+
+            // Get Transition Graph
+            {
+                lifecycle_node.create_service::<GetAvailableTransitions, _>("get_transition_graph", move |header, req| {
+                    state_machine.on_get_transition_graph(header, &req)
                 })?;
             }
         }
