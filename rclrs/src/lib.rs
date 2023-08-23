@@ -9,6 +9,7 @@ mod arguments;
 mod client;
 mod context;
 mod error;
+mod lifecycle_node;
 mod executor;
 mod node;
 mod parameter;

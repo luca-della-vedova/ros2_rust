@@ -12,7 +12,7 @@ import shutil
 import subprocess
 
 def get_args():
-  parser = argparse.ArgumentParser(description='Vendor the rcl_interfaces and builtin_interfaces packages into rclrs')
+  parser = argparse.ArgumentParser(description='Vendor the rcl_interfaces, lifecycle_msgs, and builtin_interfaces packages into rclrs')
   parser.add_argument('install_base', metavar='install_base', type=Path,
                       help='the install base (must have non-merged layout)')
   return parser.parse_args()
@@ -20,6 +20,7 @@ def get_args():
 def adjust(pkg, text):
   text = text.replace('builtin_interfaces::', 'crate::vendor::builtin_interfaces::')
   text = text.replace('rcl_interfaces::', 'crate::vendor::rcl_interfaces::')
+  text = text.replace('lifecycle_msgs::', 'crate::vendor::lifecycle_msgs::')
   text = text.replace('crate::msg', f'crate::vendor::{pkg}::msg')
   text = text.replace('crate::srv', f'crate::vendor::{pkg}::srv')
   return text
@@ -33,6 +34,7 @@ mod_contents = """//! Created by {}
 #![allow(clippy::derive_partial_eq_without_eq)]
 
 pub mod builtin_interfaces;
+pub mod lifecycle_msgs;
 pub mod rcl_interfaces;
 """.format(Path(__file__).name)
 
@@ -41,11 +43,12 @@ def main():
   assert args.install_base.is_dir(), "Install base does not exist"
   assert (args.install_base / 'builtin_interfaces').is_dir(), "Install base does not contain builtin_interfaces"
   assert (args.install_base / 'rcl_interfaces').is_dir(), "Install base does not contain rcl_interfaces"
+  assert (args.install_base / 'lifecycle_msgs').is_dir(), "Install base does not contain lifecycle_msgs"
   rclrs_root = Path(__file__).parent
   vendor_dir = rclrs_root / 'src' / 'vendor'
   if vendor_dir.exists():
     shutil.rmtree(vendor_dir)
-  for pkg in ['builtin_interfaces', 'rcl_interfaces']:
+  for pkg in ['builtin_interfaces', 'lifecycle_msgs', 'rcl_interfaces']:
     src = args.install_base / pkg / 'share' / pkg / 'rust' / 'src'
     dst = vendor_dir / pkg
     dst.mkdir(parents=True)

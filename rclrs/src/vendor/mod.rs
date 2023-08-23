@@ -3,4 +3,5 @@
 #![allow(clippy::derive_partial_eq_without_eq)]
 
 pub mod builtin_interfaces;
+pub mod lifecycle_msgs;
 pub mod rcl_interfaces;
