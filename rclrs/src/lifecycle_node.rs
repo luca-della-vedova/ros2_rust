@@ -377,6 +377,7 @@ mod tests {
         vendor::lifecycle_msgs::srv::{
             ChangeState, GetAvailableStates, GetAvailableTransitions, GetState,
         },
+        vendor::lifecycle_msgs::msg::State,
         Context, Node,
     };
 
@@ -423,27 +424,27 @@ mod tests {
         let mut test_node_builder = LifecycleNode::builder(&context, "test_node");
 
         // `Activating` transition callback
-        let on_activate_cb = |_: &State| Transition::TRANSITION_CALLBACK_SUCCESS;
+        let on_activate_cb = |_: &super::State| Transition::TRANSITION_CALLBACK_SUCCESS;
         let on_activate: LifecycleCallback = Box::new(on_activate_cb);
 
         // `Cleanup` transition callback
-        let on_cleanup_cb = |_: &State| Transition::TRANSITION_CALLBACK_SUCCESS;
+        let on_cleanup_cb = |_: &super::State| Transition::TRANSITION_CALLBACK_SUCCESS;
         let on_cleanup: LifecycleCallback = Box::new(on_cleanup_cb);
 
         // `Configuring` transition callback
-        let on_configure_cb = |_: &State| Transition::TRANSITION_CALLBACK_SUCCESS;
+        let on_configure_cb = |_: &super::State| Transition::TRANSITION_CALLBACK_SUCCESS;
         let on_configure: LifecycleCallback = Box::new(on_configure_cb);
 
         // `Deactivate` transition callback
-        let on_deactivate_cb = |_: &State| Transition::TRANSITION_CALLBACK_SUCCESS;
+        let on_deactivate_cb = |_: &super::State| Transition::TRANSITION_CALLBACK_SUCCESS;
         let on_deactivate: LifecycleCallback = Box::new(on_deactivate_cb);
 
         // Error handling callback
-        let on_error_cb = |_: &State| Transition::TRANSITION_CALLBACK_SUCCESS;
+        let on_error_cb = |_: &super::State| Transition::TRANSITION_CALLBACK_SUCCESS;
         let on_error: LifecycleCallback = Box::new(on_error_cb);
 
         // `Shutdown` transition callback
-        let on_shutdown_cb = |_: &State| Transition::TRANSITION_CALLBACK_SUCCESS;
+        let on_shutdown_cb = |_: &super::State| Transition::TRANSITION_CALLBACK_SUCCESS;
         let on_shutdown: LifecycleCallback = Box::new(on_shutdown_cb);
 
         test_node_builder.on_activate = Some(on_activate);
@@ -454,5 +455,11 @@ mod tests {
         test_node_builder.on_shutdown = Some(on_shutdown);
 
         test_node_builder.enable_communication_interface = true;
+
+        let test_node = test_node_builder.build().unwrap();
+        assert_eq!(lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE, test_node.state_machine.change_state(Transition::TRANSITION_CONFIGURE).unwrap());
+        assert_eq!(lifecycle_msgs::msg::State::PRIMARY_STATE_ACTIVE, test_node.state_machine.change_state(Transition::TRANSITION_ACTIVATE).unwrap());
+        assert_eq!(lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE, test_node.state_machine.change_state(Transition::TRANSITION_DEACTIVATE).unwrap());
+        assert_eq!(lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED, test_node.state_machine.change_state(Transition::TRANSITION_CLEANUP).unwrap());
     }
 }

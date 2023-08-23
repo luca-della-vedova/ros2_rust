@@ -89,7 +89,7 @@ impl LifecycleMachine {
         };
 
         let ret = self.change_state(transition_id).unwrap();
-        resp.success = ret.id == lifecycle_msgs::msg::Transition::TRANSITION_CALLBACK_SUCCESS;
+        resp.success = ret == lifecycle_msgs::msg::Transition::TRANSITION_CALLBACK_SUCCESS;
 
         resp
     }
