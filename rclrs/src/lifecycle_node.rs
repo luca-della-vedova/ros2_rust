@@ -494,7 +494,7 @@ impl LifecycleNode {
 
     pub fn get_current_state(&self) -> Result<State, RclrsError> {
         // Make sure that the state machine is initialized before doing anything
-        let mut state_machine = self.state_machine.lock().unwrap();
+        let state_machine = self.state_machine.lock().unwrap();
         // SAFETY: No preconditions for this function
         unsafe {
             rcl_lifecycle_state_machine_is_initialized(&*state_machine).ok()?;
