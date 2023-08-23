@@ -207,9 +207,11 @@ impl LifecycleNodeBuilder {
 
         // SAFETY: Initializing the lifecycle state machine is always safe
         unsafe {
+            let mut state_machine_mtx = state_machine.lock().unwrap();
+            let mut rcl_node_mtx = rcl_node_mtx.lock().unwrap();
             rcl_lifecycle_state_machine_init(
-                state_machine.get_mut().unwrap(),
-                rcl_node_mtx.get_mut().unwrap(),
+                &mut *state_machine_mtx,
+                &mut *rcl_node_mtx,
                 <lifecycle_msgs::msg::TransitionEvent as rosidl_runtime_rs::Message>::RmwMsg::get_type_support() as *const rosidl_message_type_support_t,
                 <lifecycle_msgs::srv::ChangeState as rosidl_runtime_rs::Service>::get_type_support() as *const rosidl_service_type_support_t,
                 <lifecycle_msgs::srv::GetState as rosidl_runtime_rs::Service>::get_type_support() as *const rosidl_service_type_support_t,
