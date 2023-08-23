@@ -20,11 +20,12 @@ use std::sync::{Arc, Mutex};
 use rosidl_runtime_rs::{RmwMessage, Service};
 
 use crate::lifecycle_node::{call_string_getter_with_handle, LifecycleNode};
-use crate::vendor::lifecycle_msgs::srv::{ChangeState, ChangeState_Request, ChangeState_Response};
+use crate::vendor::lifecycle_msgs::srv::{ChangeState, ChangeState_Request, ChangeState_Response, GetState, GetState_Response, GetAvailableStates, GetAvailableStates_Response, GetAvailableTransitions, GetAvailableTransitions_Response};
 use crate::vendor::{lifecycle_msgs, rcl_interfaces};
 use crate::{rcl_bindings::*, resolve_parameter_overrides, Context, RclrsError, ToResult};
 
 use super::LifecycleCallback;
+use super::state_machine::LifecycleMachine;
 
 /// A builder for creating a [`LifecycleNode`][1].
 ///
@@ -211,9 +212,9 @@ impl LifecycleNodeBuilder {
             .ok_or("The \"on_shutdown\" transition is required for building.")?;
 
         // SAFETY: Getting a zero-initialized state machine is always safe
-        let state_machine = Arc::new(Mutex::new(unsafe {
+        let state_machine = Mutex::new(unsafe {
             rcl_lifecycle_get_zero_initialized_state_machine()
-        }));
+        });
         // SAFETY: Getting the default state machine options is always safe
         let mut state_machine_options =
             unsafe { rcl_lifecycle_get_default_state_machine_options() };
@@ -239,6 +240,16 @@ impl LifecycleNodeBuilder {
             ).ok()?;
         }
 
+        let state_machine = Arc::new(LifecycleMachine {
+            state_machine,
+            on_activate: Mutex::new(on_activate),
+            on_cleanup: Mutex::new(on_cleanup),
+            on_configure: Mutex::new(on_configure),
+            on_deactivate: Mutex::new(on_deactivate),
+            on_error: Mutex::new(on_error),
+            on_shutdown: Mutex::new(on_shutdown),
+        });
+
         let mut lifecycle_node = LifecycleNode {
             rcl_node_mtx,
             rcl_context_mtx: self.context.clone(),
@@ -246,27 +257,40 @@ impl LifecycleNodeBuilder {
             guard_conditions: vec![],
             services: vec![],
             subscriptions: vec![],
-            on_activate: Mutex::new(on_activate),
-            on_cleanup: Mutex::new(on_cleanup),
-            on_configure: Mutex::new(on_configure),
-            on_deactivate: Mutex::new(on_deactivate),
-            on_error: Mutex::new(on_error),
-            on_shutdown: Mutex::new(on_shutdown),
-            state_machine,
+            state_machine: state_machine.clone(),
             _parameter_map,
         };
 
         if self.enable_communication_interface {
             // Change State
             {
-                // // let srv_change_state = crate::Service::new(lifecycle_node.rcl_node_mtx, , callback)
-                // let cb = |&header: &rmw_request_id_t, req: ChangeState_Request| -> ChangeState_Response {
-                //     let resp = on_change_state(&lifecycle_node, &header, &req);
-                //     resp
-                // };
-                lifecycle_node.create_service::<ChangeState, _>("test", |&header, req| {
-                    lifecycle_node.on_change_state(&header, &req)
-                });
+                let state_machine_ptr = state_machine.clone();
+                lifecycle_node.create_service::<ChangeState, _>("change_state", move |header, req| -> ChangeState_Response {
+                    state_machine_ptr.on_change_state(header, &req)
+                })?;
+            }
+
+            // Get State
+            {
+                let state_machine_ptr = state_machine.clone();
+                lifecycle_node.create_service::<GetState, _>("get_state", move |header, req| -> GetState_Response {
+                    state_machine_ptr.on_get_state(header, &req)
+                })?;
+            }
+
+            // Get Available States
+            {
+                let state_machine_ptr = state_machine.clone();
+                lifecycle_node.create_service::<GetAvailableStates, _>("get_available_states", move |header, req| {
+                    state_machine_ptr.on_get_available_states(header, &req)
+                })?;
+            }
+
+            // Get Avaliable Transitions
+            {
+                lifecycle_node.create_service::<GetAvailableTransitions, _>("get_available_transitions", move |header, req| {
+                    state_machine.on_get_available_transitions(header, &req)
+                })?;
             }
         }
 

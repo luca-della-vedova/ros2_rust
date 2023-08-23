@@ -57,20 +57,14 @@ pub struct LifecycleNode {
     pub(crate) guard_conditions: Vec<Weak<GuardCondition>>,
     pub(crate) services: Vec<Weak<dyn ServiceBase>>,
     pub(crate) subscriptions: Vec<Weak<dyn SubscriptionBase>>,
-    pub(crate) on_activate: Mutex<LifecycleCallback>,
-    pub(crate) on_cleanup: Mutex<LifecycleCallback>,
-    pub(crate) on_configure: Mutex<LifecycleCallback>,
-    pub(crate) on_deactivate: Mutex<LifecycleCallback>,
-    pub(crate) on_error: Mutex<LifecycleCallback>,
-    pub(crate) on_shutdown: Mutex<LifecycleCallback>,
-    state_machine: Arc<Mutex<rcl_lifecycle_state_machine_t>>,
+    state_machine: Arc<state_machine::LifecycleMachine>,
     _parameter_map: ParameterOverrideMap,
 }
 
 impl Drop for LifecycleNode {
     fn drop(&mut self) {
         let mut node = self.rcl_node_mtx.lock().unwrap();
-        let mut state_machine = self.state_machine.lock().unwrap();
+        let mut state_machine = self.state_machine.state_machine.lock().unwrap();
         // SAFETY: No preconditions for this function
         unsafe {
             rcl_lifecycle_state_machine_fini(&mut *state_machine, &mut *node)
@@ -294,462 +288,462 @@ impl LifecycleNode {
         domain_id
     }
 
-    pub(crate) fn on_change_state(
-        &self,
-        _header: &rmw_request_id_t,
-        req: &ChangeState_Request,
-    ) -> ChangeState_Response {
-        let mut resp = ChangeState_Response::default();
-        let transition_id = {
-            let state_machine = &*self.state_machine.lock().unwrap();
-            // SAFETY: No preconditions for this function.
-            unsafe {
-                rcl_lifecycle_state_machine_is_initialized(state_machine)
-                    .ok()
-                    .unwrap()
-            };
-            let mut transition_id = req.transition.id;
+    // pub(crate) fn on_change_state(
+    //     &self,
+    //     _header: &rmw_request_id_t,
+    //     req: &ChangeState_Request,
+    // ) -> ChangeState_Response {
+    //     let mut resp = ChangeState_Response::default();
+    //     let transition_id = {
+    //         let state_machine = &*self.state_machine.lock().unwrap();
+    //         // SAFETY: No preconditions for this function.
+    //         unsafe {
+    //             rcl_lifecycle_state_machine_is_initialized(state_machine)
+    //                 .ok()
+    //                 .unwrap()
+    //         };
+    //         let mut transition_id = req.transition.id;
 
-            // If there's a label attached to the request, we check the transition attached to this label.
-            // We can't compare the id of the looked up transition any further because ROS 2 service call
-            // sets all integers to zero by default. That means if we call ROS 2 service call:
-            // ... {transition: {label: shutdown}}
-            // the id of the request is 0 (zero) whereas the id from the looked up transition can be different.
-            // The result of this is that the label takes precedence over the ID.
-            if !req.transition.label.is_empty() {
-                // This should be safe to unwrap, since the label originated in C/C++
-                let label_cstr = CString::new(req.transition.label.clone()).unwrap();
-                // SAFETY: No preconditions for this function - however it may return null
-                let rcl_transition = unsafe {
-                    rcl_lifecycle_get_transition_by_label(
-                        state_machine.current_state,
-                        label_cstr.as_ptr(),
-                    )
-                };
-                if rcl_transition.is_null() {
-                    resp.success = false;
-                    return resp;
-                }
-                transition_id = unsafe { (*rcl_transition).id as u8 };
-            }
-            transition_id
-        };
+    //         // If there's a label attached to the request, we check the transition attached to this label.
+    //         // We can't compare the id of the looked up transition any further because ROS 2 service call
+    //         // sets all integers to zero by default. That means if we call ROS 2 service call:
+    //         // ... {transition: {label: shutdown}}
+    //         // the id of the request is 0 (zero) whereas the id from the looked up transition can be different.
+    //         // The result of this is that the label takes precedence over the ID.
+    //         if !req.transition.label.is_empty() {
+    //             // This should be safe to unwrap, since the label originated in C/C++
+    //             let label_cstr = CString::new(req.transition.label.clone()).unwrap();
+    //             // SAFETY: No preconditions for this function - however it may return null
+    //             let rcl_transition = unsafe {
+    //                 rcl_lifecycle_get_transition_by_label(
+    //                     state_machine.current_state,
+    //                     label_cstr.as_ptr(),
+    //                 )
+    //             };
+    //             if rcl_transition.is_null() {
+    //                 resp.success = false;
+    //                 return resp;
+    //             }
+    //             transition_id = unsafe { (*rcl_transition).id as u8 };
+    //         }
+    //         transition_id
+    //     };
 
-        let ret = self.change_state(transition_id).unwrap();
-        resp.success = ret.id == lifecycle_msgs::msg::Transition::TRANSITION_CALLBACK_SUCCESS;
+    //     let ret = self.change_state(transition_id).unwrap();
+    //     resp.success = ret.id == lifecycle_msgs::msg::Transition::TRANSITION_CALLBACK_SUCCESS;
 
-        resp
-    }
+    //     resp
+    // }
 
-    pub(crate) fn on_get_state(
-        &self,
-        _header: rmw_request_id_t,
-        _req: GetState_Request,
-    ) -> Result<GetState_Response, RclrsError> {
-        let state_machine = &*self.state_machine.lock().unwrap();
-        // SAFETY: No preconditions for this function.
-        unsafe { rcl_lifecycle_state_machine_is_initialized(state_machine).ok()? };
+    // pub(crate) fn on_get_state(
+    //     &self,
+    //     _header: rmw_request_id_t,
+    //     _req: GetState_Request,
+    // ) -> Result<GetState_Response, RclrsError> {
+    //     let state_machine = &*self.state_machine.lock().unwrap();
+    //     // SAFETY: No preconditions for this function.
+    //     unsafe { rcl_lifecycle_state_machine_is_initialized(state_machine).ok()? };
 
-        // SAFETY: The state machine has been confirmed to be initialized by this point, so the
-        // label pointer should not be null
-        let label = unsafe {
-            CStr::from_ptr((*state_machine.current_state).label)
-                .to_owned()
-                .to_string_lossy()
-                .to_string()
-        };
-        // SAFETY: The state machine has been confirmed to be initialized by this point, so the id
-        // pointer should not be null.
-        let id = unsafe { (*state_machine.current_state).id };
-        let current_state = lifecycle_msgs::msg::State { id, label };
+    //     // SAFETY: The state machine has been confirmed to be initialized by this point, so the
+    //     // label pointer should not be null
+    //     let label = unsafe {
+    //         CStr::from_ptr((*state_machine.current_state).label)
+    //             .to_owned()
+    //             .to_string_lossy()
+    //             .to_string()
+    //     };
+    //     // SAFETY: The state machine has been confirmed to be initialized by this point, so the id
+    //     // pointer should not be null.
+    //     let id = unsafe { (*state_machine.current_state).id };
+    //     let current_state = lifecycle_msgs::msg::State { id, label };
 
-        let resp = GetState_Response { current_state };
+    //     let resp = GetState_Response { current_state };
 
-        Ok(resp)
-    }
+    //     Ok(resp)
+    // }
 
-    pub(crate) fn on_get_available_states(
-        &self,
-        _header: rmw_request_id_t,
-        _req: GetAvailableStates_Request,
-    ) -> Result<GetAvailableStates_Response, RclrsError> {
-        let state_machine = &*self.state_machine.lock().unwrap();
-        // SAFETY: No preconditions for this function.
-        unsafe { rcl_lifecycle_state_machine_is_initialized(state_machine).ok()? };
+    // pub(crate) fn on_get_available_states(
+    //     &self,
+    //     _header: rmw_request_id_t,
+    //     _req: GetAvailableStates_Request,
+    // ) -> Result<GetAvailableStates_Response, RclrsError> {
+    //     let state_machine = &*self.state_machine.lock().unwrap();
+    //     // SAFETY: No preconditions for this function.
+    //     unsafe { rcl_lifecycle_state_machine_is_initialized(state_machine).ok()? };
 
-        let mut available_states = Vec::<lifecycle_msgs::msg::State>::new();
-        for i in 0..state_machine.transition_map.states_size as isize {
-            // SAFETY: The state machine has been confirmed to be initialized by this point, so the
-            // label pointer should not be null
-            let label = unsafe {
-                CStr::from_ptr((*state_machine.transition_map.states.offset(i)).label)
-                    .to_owned()
-                    .to_string_lossy()
-                    .to_string()
-            };
-            // SAFETY: The state machine has been confirmed to be initialized by this point, so the
-            // id pointer should not be null
-            let id = unsafe { (*state_machine.transition_map.states.offset(i)).id };
-            let available_state = lifecycle_msgs::msg::State { id, label };
-            available_states.push(available_state);
-        }
+    //     let mut available_states = Vec::<lifecycle_msgs::msg::State>::new();
+    //     for i in 0..state_machine.transition_map.states_size as isize {
+    //         // SAFETY: The state machine has been confirmed to be initialized by this point, so the
+    //         // label pointer should not be null
+    //         let label = unsafe {
+    //             CStr::from_ptr((*state_machine.transition_map.states.offset(i)).label)
+    //                 .to_owned()
+    //                 .to_string_lossy()
+    //                 .to_string()
+    //         };
+    //         // SAFETY: The state machine has been confirmed to be initialized by this point, so the
+    //         // id pointer should not be null
+    //         let id = unsafe { (*state_machine.transition_map.states.offset(i)).id };
+    //         let available_state = lifecycle_msgs::msg::State { id, label };
+    //         available_states.push(available_state);
+    //     }
 
-        let resp = GetAvailableStates_Response { available_states };
+    //     let resp = GetAvailableStates_Response { available_states };
 
-        Ok(resp)
-    }
+    //     Ok(resp)
+    // }
 
-    pub(crate) fn on_get_available_transitions(
-        &self,
-        _header: rmw_request_id_t,
-        _req: GetAvailableTransitions_Request,
-    ) -> Result<GetAvailableTransitions_Response, RclrsError> {
-        let state_machine = &*self.state_machine.lock().unwrap();
-        // SAFETY: No preconditions for this function.
-        unsafe { rcl_lifecycle_state_machine_is_initialized(state_machine).ok()? };
+    // pub(crate) fn on_get_available_transitions(
+    //     &self,
+    //     _header: rmw_request_id_t,
+    //     _req: GetAvailableTransitions_Request,
+    // ) -> Result<GetAvailableTransitions_Response, RclrsError> {
+    //     let state_machine = &*self.state_machine.lock().unwrap();
+    //     // SAFETY: No preconditions for this function.
+    //     unsafe { rcl_lifecycle_state_machine_is_initialized(state_machine).ok()? };
 
-        let mut available_transitions = Vec::<lifecycle_msgs::msg::TransitionDescription>::new();
-        // SAFETY: The state machine has been confirmed to be initialized by this point, so the
-        // transition size should not be null
-        let valid_transition_size =
-            unsafe { (*state_machine.current_state).valid_transition_size as isize };
-        for i in 0..valid_transition_size {
-            // SAFETY: The state machine has been confirmed to be initialized by this point, so the
-            // transition pointer should not be null
-            let rcl_transition =
-                unsafe { (*state_machine.current_state).valid_transitions.offset(i) };
-            // SAFETY: The state machine has been confirmed to be initialized by this point, so
-            // the transition pointer should not be null
-            let transition = unsafe {
-                let transition_id = (*rcl_transition).id as u8;
-                let transition_label = CStr::from_ptr((*rcl_transition).label)
-                    .to_owned()
-                    .to_string_lossy()
-                    .to_string();
-                lifecycle_msgs::msg::Transition {
-                    id: transition_id,
-                    label: transition_label,
-                }
-            };
-            // SAFETY: The state machine has been confirmed to be initialized by this point, so
-            // the start state pointer should not be null
-            let start_state = unsafe {
-                let start_state_id = (*(*rcl_transition).start).id;
-                let start_state_label = CStr::from_ptr((*(*rcl_transition).start).label)
-                    .to_owned()
-                    .to_string_lossy()
-                    .to_string();
-                lifecycle_msgs::msg::State {
-                    id: start_state_id,
-                    label: start_state_label,
-                }
-            };
-            // SAFETY: The state machine has been confirmed to be initialized by this point, so
-            // the goal state pointer should not be null
-            let goal_state = unsafe {
-                let goal_state_id = (*(*rcl_transition).goal).id;
-                let goal_state_label = CStr::from_ptr((*(*rcl_transition).goal).label)
-                    .to_owned()
-                    .to_string_lossy()
-                    .to_string();
-                lifecycle_msgs::msg::State {
-                    id: goal_state_id,
-                    label: goal_state_label,
-                }
-            };
-            let trans_desc = lifecycle_msgs::msg::TransitionDescription {
-                transition,
-                start_state,
-                goal_state,
-            };
-            available_transitions.push(trans_desc);
-        }
-        let resp = lifecycle_msgs::srv::GetAvailableTransitions_Response {
-            available_transitions,
-        };
-        Ok(resp)
-    }
+    //     let mut available_transitions = Vec::<lifecycle_msgs::msg::TransitionDescription>::new();
+    //     // SAFETY: The state machine has been confirmed to be initialized by this point, so the
+    //     // transition size should not be null
+    //     let valid_transition_size =
+    //         unsafe { (*state_machine.current_state).valid_transition_size as isize };
+    //     for i in 0..valid_transition_size {
+    //         // SAFETY: The state machine has been confirmed to be initialized by this point, so the
+    //         // transition pointer should not be null
+    //         let rcl_transition =
+    //             unsafe { (*state_machine.current_state).valid_transitions.offset(i) };
+    //         // SAFETY: The state machine has been confirmed to be initialized by this point, so
+    //         // the transition pointer should not be null
+    //         let transition = unsafe {
+    //             let transition_id = (*rcl_transition).id as u8;
+    //             let transition_label = CStr::from_ptr((*rcl_transition).label)
+    //                 .to_owned()
+    //                 .to_string_lossy()
+    //                 .to_string();
+    //             lifecycle_msgs::msg::Transition {
+    //                 id: transition_id,
+    //                 label: transition_label,
+    //             }
+    //         };
+    //         // SAFETY: The state machine has been confirmed to be initialized by this point, so
+    //         // the start state pointer should not be null
+    //         let start_state = unsafe {
+    //             let start_state_id = (*(*rcl_transition).start).id;
+    //             let start_state_label = CStr::from_ptr((*(*rcl_transition).start).label)
+    //                 .to_owned()
+    //                 .to_string_lossy()
+    //                 .to_string();
+    //             lifecycle_msgs::msg::State {
+    //                 id: start_state_id,
+    //                 label: start_state_label,
+    //             }
+    //         };
+    //         // SAFETY: The state machine has been confirmed to be initialized by this point, so
+    //         // the goal state pointer should not be null
+    //         let goal_state = unsafe {
+    //             let goal_state_id = (*(*rcl_transition).goal).id;
+    //             let goal_state_label = CStr::from_ptr((*(*rcl_transition).goal).label)
+    //                 .to_owned()
+    //                 .to_string_lossy()
+    //                 .to_string();
+    //             lifecycle_msgs::msg::State {
+    //                 id: goal_state_id,
+    //                 label: goal_state_label,
+    //             }
+    //         };
+    //         let trans_desc = lifecycle_msgs::msg::TransitionDescription {
+    //             transition,
+    //             start_state,
+    //             goal_state,
+    //         };
+    //         available_transitions.push(trans_desc);
+    //     }
+    //     let resp = lifecycle_msgs::srv::GetAvailableTransitions_Response {
+    //         available_transitions,
+    //     };
+    //     Ok(resp)
+    // }
 
-    pub(crate) fn on_get_transition_graph(
-        &self,
-        _header: rmw_request_id_t,
-        _req: GetAvailableTransitions_Request,
-    ) -> Result<GetAvailableTransitions_Response, RclrsError> {
-        let state_machine = &*self.state_machine.lock().unwrap();
-        // SAFETY: No preconditions for this function.
-        unsafe { rcl_lifecycle_state_machine_is_initialized(state_machine).ok()? };
+    // pub(crate) fn on_get_transition_graph(
+    //     &self,
+    //     _header: rmw_request_id_t,
+    //     _req: GetAvailableTransitions_Request,
+    // ) -> Result<GetAvailableTransitions_Response, RclrsError> {
+    //     let state_machine = &*self.state_machine.lock().unwrap();
+    //     // SAFETY: No preconditions for this function.
+    //     unsafe { rcl_lifecycle_state_machine_is_initialized(state_machine).ok()? };
 
-        let mut available_transitions = Vec::<lifecycle_msgs::msg::TransitionDescription>::new();
-        // SAFETY: The state machine has been confirmed to be initialized by this point, so the
-        // transition size should not be null
-        let valid_transition_size =
-            unsafe { (*state_machine.current_state).valid_transition_size as isize };
-        for i in 0..valid_transition_size {
-            // SAFETY: The state machine has been confirmed to be initialized by this point, so the
-            // transition pointer should not be null
-            let rcl_transition =
-                unsafe { (*state_machine.current_state).valid_transitions.offset(i) };
-            // SAFETY: The state machine has been confirmed to be initialized by this point, so
-            // the transition pointer should not be null
-            let transition = unsafe {
-                let transition_id = (*rcl_transition).id as u8;
-                let transition_label = CStr::from_ptr((*rcl_transition).label)
-                    .to_owned()
-                    .to_string_lossy()
-                    .to_string();
-                lifecycle_msgs::msg::Transition {
-                    id: transition_id,
-                    label: transition_label,
-                }
-            };
-            // SAFETY: The state machine has been confirmed to be initialized by this point, so
-            // the start state pointer should not be null
-            let start_state = unsafe {
-                let start_state_id = (*(*rcl_transition).start).id;
-                let start_state_label = CStr::from_ptr((*(*rcl_transition).start).label)
-                    .to_owned()
-                    .to_string_lossy()
-                    .to_string();
-                lifecycle_msgs::msg::State {
-                    id: start_state_id,
-                    label: start_state_label,
-                }
-            };
-            // SAFETY: The state machine has been confirmed to be initialized by this point, so
-            // the goal state pointer should not be null
-            let goal_state = unsafe {
-                let goal_state_id = (*(*rcl_transition).goal).id;
-                let goal_state_label = CStr::from_ptr((*(*rcl_transition).goal).label)
-                    .to_owned()
-                    .to_string_lossy()
-                    .to_string();
-                lifecycle_msgs::msg::State {
-                    id: goal_state_id,
-                    label: goal_state_label,
-                }
-            };
-            let trans_desc = lifecycle_msgs::msg::TransitionDescription {
-                transition,
-                start_state,
-                goal_state,
-            };
-            available_transitions.push(trans_desc);
-        }
-        let resp = lifecycle_msgs::srv::GetAvailableTransitions_Response {
-            available_transitions,
-        };
-        Ok(resp)
-    }
+    //     let mut available_transitions = Vec::<lifecycle_msgs::msg::TransitionDescription>::new();
+    //     // SAFETY: The state machine has been confirmed to be initialized by this point, so the
+    //     // transition size should not be null
+    //     let valid_transition_size =
+    //         state_machine.transition_map.transitions_size as isize;
+    //     for i in 0..valid_transition_size {
+    //         // SAFETY: The state machine has been confirmed to be initialized by this point, so the
+    //         // transition pointer should not be null
+    //         let rcl_transition =
+    //             unsafe { (state_machine.transition_map).transitions.offset(i) };
+    //         // SAFETY: The state machine has been confirmed to be initialized by this point, so
+    //         // the transition pointer should not be null
+    //         let transition = unsafe {
+    //             let transition_id = (*rcl_transition).id as u8;
+    //             let transition_label = CStr::from_ptr((*rcl_transition).label)
+    //                 .to_owned()
+    //                 .to_string_lossy()
+    //                 .to_string();
+    //             lifecycle_msgs::msg::Transition {
+    //                 id: transition_id,
+    //                 label: transition_label,
+    //             }
+    //         };
+    //         // SAFETY: The state machine has been confirmed to be initialized by this point, so
+    //         // the start state pointer should not be null
+    //         let start_state = unsafe {
+    //             let start_state_id = (*(*rcl_transition).start).id;
+    //             let start_state_label = CStr::from_ptr((*(*rcl_transition).start).label)
+    //                 .to_owned()
+    //                 .to_string_lossy()
+    //                 .to_string();
+    //             lifecycle_msgs::msg::State {
+    //                 id: start_state_id,
+    //                 label: start_state_label,
+    //             }
+    //         };
+    //         // SAFETY: The state machine has been confirmed to be initialized by this point, so
+    //         // the goal state pointer should not be null
+    //         let goal_state = unsafe {
+    //             let goal_state_id = (*(*rcl_transition).goal).id;
+    //             let goal_state_label = CStr::from_ptr((*(*rcl_transition).goal).label)
+    //                 .to_owned()
+    //                 .to_string_lossy()
+    //                 .to_string();
+    //             lifecycle_msgs::msg::State {
+    //                 id: goal_state_id,
+    //                 label: goal_state_label,
+    //             }
+    //         };
+    //         let trans_desc = lifecycle_msgs::msg::TransitionDescription {
+    //             transition,
+    //             start_state,
+    //             goal_state,
+    //         };
+    //         available_transitions.push(trans_desc);
+    //     }
+    //     let resp = lifecycle_msgs::srv::GetAvailableTransitions_Response {
+    //         available_transitions,
+    //     };
+    //     Ok(resp)
+    // }
 
-    pub fn get_current_state(&self) -> Result<State, RclrsError> {
-        // Make sure that the state machine is initialized before doing anything
-        let state_machine = self.state_machine.lock().unwrap();
-        // SAFETY: No preconditions for this function
-        unsafe {
-            rcl_lifecycle_state_machine_is_initialized(&*state_machine).ok()?;
-        }
+    // pub fn get_current_state(&self) -> Result<State, RclrsError> {
+    //     // Make sure that the state machine is initialized before doing anything
+    //     let state_machine = self.state_machine.lock().unwrap();
+    //     // SAFETY: No preconditions for this function
+    //     unsafe {
+    //         rcl_lifecycle_state_machine_is_initialized(&*state_machine).ok()?;
+    //     }
 
-        // let mut x = unsafe { state_machine.current_state };
+    //     // let mut x = unsafe { state_machine.current_state };
 
-        // SAFETY: The state machine has been confirmed to be initialized by this point, so the
-        // pointer should not be null
-        let current_state =
-            unsafe { State::from_raw(state_machine.current_state as *mut rcl_lifecycle_state_s) };
-        Ok(current_state)
-    }
+    //     // SAFETY: The state machine has been confirmed to be initialized by this point, so the
+    //     // pointer should not be null
+    //     let current_state =
+    //         unsafe { State::from_raw(state_machine.current_state as *mut rcl_lifecycle_state_s) };
+    //     Ok(current_state)
+    // }
 
-    pub fn get_available_states(&self) -> Result<Vec<State>, RclrsError> {
-        // Make sure that the state machine is initialized before doing anything
-        let state_machine = self.state_machine.lock().unwrap();
-        // SAFETY: No preconditions for this function
-        unsafe {
-            rcl_lifecycle_state_machine_is_initialized(&*state_machine).ok()?;
-        }
+    // pub fn get_available_states(&self) -> Result<Vec<State>, RclrsError> {
+    //     // Make sure that the state machine is initialized before doing anything
+    //     let state_machine = self.state_machine.lock().unwrap();
+    //     // SAFETY: No preconditions for this function
+    //     unsafe {
+    //         rcl_lifecycle_state_machine_is_initialized(&*state_machine).ok()?;
+    //     }
 
-        let mut states = Vec::<State>::new();
+    //     let mut states = Vec::<State>::new();
 
-        let states_size = state_machine.transition_map.states_size as isize;
-        for i in 0..states_size {
-            // SAFETY: The state machine has been confirmed to be initialized by this point, so the
-            // pointer should not be null
-            let available_state =
-                unsafe { State::from_raw(state_machine.transition_map.states.offset(i)) };
-            states.push(available_state);
-        }
+    //     let states_size = state_machine.transition_map.states_size as isize;
+    //     for i in 0..states_size {
+    //         // SAFETY: The state machine has been confirmed to be initialized by this point, so the
+    //         // pointer should not be null
+    //         let available_state =
+    //             unsafe { State::from_raw(state_machine.transition_map.states.offset(i)) };
+    //         states.push(available_state);
+    //     }
 
-        Ok(states)
-    }
+    //     Ok(states)
+    // }
 
-    pub fn get_available_transitions(&self) -> Result<Vec<transition::Transition>, RclrsError> {
-        // Make sure that the state machine is initialized before doing anything
-        let state_machine = self.state_machine.lock().unwrap();
-        // SAFETY: No preconditions for this function
-        unsafe {
-            rcl_lifecycle_state_machine_is_initialized(&*state_machine).ok()?;
-        }
+    // pub fn get_available_transitions(&self) -> Result<Vec<transition::Transition>, RclrsError> {
+    //     // Make sure that the state machine is initialized before doing anything
+    //     let state_machine = self.state_machine.lock().unwrap();
+    //     // SAFETY: No preconditions for this function
+    //     unsafe {
+    //         rcl_lifecycle_state_machine_is_initialized(&*state_machine).ok()?;
+    //     }
 
-        let mut transitions = Vec::<transition::Transition>::new();
+    //     let mut transitions = Vec::<transition::Transition>::new();
 
-        // SAFETY: The state machine has been confirmed to be initialized at this point, so the
-        // pointer should not be null
-        let transitions_size =
-            unsafe { (*state_machine.current_state).valid_transition_size as isize };
-        for i in 0..transitions_size {
-            // SAFETY: The state machine has been confirmed to be initialized at this point, so the
-            // pointer should not be null
-            let available_transition = unsafe {
-                transition::Transition::from_raw(
-                    (*state_machine.current_state).valid_transitions.offset(i),
-                )
-            };
-            transitions.push(available_transition);
-        }
+    //     // SAFETY: The state machine has been confirmed to be initialized at this point, so the
+    //     // pointer should not be null
+    //     let transitions_size =
+    //         unsafe { (*state_machine.current_state).valid_transition_size as isize };
+    //     for i in 0..transitions_size {
+    //         // SAFETY: The state machine has been confirmed to be initialized at this point, so the
+    //         // pointer should not be null
+    //         let available_transition = unsafe {
+    //             transition::Transition::from_raw(
+    //                 (*state_machine.current_state).valid_transitions.offset(i),
+    //             )
+    //         };
+    //         transitions.push(available_transition);
+    //     }
 
-        Ok(transitions)
-    }
+    //     Ok(transitions)
+    // }
 
-    pub fn get_transition_graph(&self) -> Result<Vec<transition::Transition>, RclrsError> {
-        // Make sure that the state machine is initialized before doing anything
-        let state_machine = self.state_machine.lock().unwrap();
-        // SAFETY: No preconditions for this function
-        unsafe {
-            rcl_lifecycle_state_machine_is_initialized(&*state_machine).ok()?;
-        }
+    // pub fn get_transition_graph(&self) -> Result<Vec<transition::Transition>, RclrsError> {
+    //     // Make sure that the state machine is initialized before doing anything
+    //     let state_machine = self.state_machine.lock().unwrap();
+    //     // SAFETY: No preconditions for this function
+    //     unsafe {
+    //         rcl_lifecycle_state_machine_is_initialized(&*state_machine).ok()?;
+    //     }
 
-        let mut transitions = Vec::<transition::Transition>::new();
+    //     let mut transitions = Vec::<transition::Transition>::new();
 
-        // SAFETY: The state machine has been confirmed to be initialized at this point, so the
-        // pointer should not be null
-        let transitions_size = state_machine.transition_map.transitions_size as isize;
-        for i in 0..transitions_size {
-            // SAFETY: The state machine has been confirmed to be initialized at this point, so the
-            // pointer should not be null
-            let available_transition = unsafe {
-                transition::Transition::from_raw(state_machine.transition_map.transitions.offset(i))
-            };
-            transitions.push(available_transition);
-        }
+    //     // SAFETY: The state machine has been confirmed to be initialized at this point, so the
+    //     // pointer should not be null
+    //     let transitions_size = state_machine.transition_map.transitions_size as isize;
+    //     for i in 0..transitions_size {
+    //         // SAFETY: The state machine has been confirmed to be initialized at this point, so the
+    //         // pointer should not be null
+    //         let available_transition = unsafe {
+    //             transition::Transition::from_raw(state_machine.transition_map.transitions.offset(i))
+    //         };
+    //         transitions.push(available_transition);
+    //     }
 
-        Ok(transitions)
-    }
+    //     Ok(transitions)
+    // }
 
-    pub fn change_state(&self, transition_id: u8) -> Result<Transition, RclrsError> {
-        // Make sure that the state machine is initialized before doing anything
-        let mut state_machine = self.state_machine.lock().unwrap();
-        // SAFETY: No preconditions for this function
-        unsafe {
-            rcl_lifecycle_state_machine_is_initialized(&*state_machine).ok()?;
-        }
+    // pub fn change_state(&self, transition_id: u8) -> Result<Transition, RclrsError> {
+    //     // Make sure that the state machine is initialized before doing anything
+    //     let mut state_machine = self.state_machine.lock().unwrap();
+    //     // SAFETY: No preconditions for this function
+    //     unsafe {
+    //         rcl_lifecycle_state_machine_is_initialized(&*state_machine).ok()?;
+    //     }
 
-        let publish_update = true;
-        // Keep the initial state to pass to a transition callback
-        let initial_state = state_machine.current_state;
-        // SAFETY: The state machine has been checked to be initialized by this point, and is
-        // therefore not null. As for the pointer cast, it's as safe as the rclcpp version. A
-        // better method of handling state will probably need to be devised later on, though.
-        let initial_state =
-            unsafe { &State::from_raw(initial_state as *mut rcl_lifecycle_state_s) };
+    //     let publish_update = true;
+    //     // Keep the initial state to pass to a transition callback
+    //     let initial_state = state_machine.current_state;
+    //     // SAFETY: The state machine has been checked to be initialized by this point, and is
+    //     // therefore not null. As for the pointer cast, it's as safe as the rclcpp version. A
+    //     // better method of handling state will probably need to be devised later on, though.
+    //     let initial_state =
+    //         unsafe { &State::from_raw(initial_state as *mut rcl_lifecycle_state_s) };
 
-        // SAFETY: The state machine has been checked to be initialized by this point
-        unsafe {
-            rcl_lifecycle_trigger_transition_by_id(
-                &mut *state_machine,
-                transition_id,
-                publish_update,
-            )
-            .ok()?
-        };
+    //     // SAFETY: The state machine has been checked to be initialized by this point
+    //     unsafe {
+    //         rcl_lifecycle_trigger_transition_by_id(
+    //             &mut *state_machine,
+    //             transition_id,
+    //             publish_update,
+    //         )
+    //         .ok()?
+    //     };
 
-        let get_label_for_return_code = |cb_return_code: &Transition| {
-            let cb_id = cb_return_code.id;
-            if cb_id == Transition::TRANSITION_CALLBACK_SUCCESS {
-                "transition_success"
-            } else if cb_id == Transition::TRANSITION_CALLBACK_FAILURE {
-                "transition_failure"
-            } else {
-                "transition_error"
-            }
-        };
+    //     let get_label_for_return_code = |cb_return_code: &Transition| {
+    //         let cb_id = cb_return_code.id;
+    //         if cb_id == Transition::TRANSITION_CALLBACK_SUCCESS {
+    //             "transition_success"
+    //         } else if cb_id == Transition::TRANSITION_CALLBACK_FAILURE {
+    //             "transition_failure"
+    //         } else {
+    //             "transition_error"
+    //         }
+    //     };
 
-        // SAFETY: The state machine is not null, since it's initialized
-        let cb_return_code =
-            self.execute_callback(unsafe { (*state_machine.current_state).id }, initial_state);
-        let transition_label = get_label_for_return_code(&cb_return_code);
-        let transition_label_cstr = CString::new(transition_label).unwrap(); // Should be fine, since the strings are known to be valid CStrings
+    //     // SAFETY: The state machine is not null, since it's initialized
+    //     let cb_return_code =
+    //         self.execute_callback(unsafe { (*state_machine.current_state).id }, initial_state);
+    //     let transition_label = get_label_for_return_code(&cb_return_code);
+    //     let transition_label_cstr = CString::new(transition_label).unwrap(); // Should be fine, since the strings are known to be valid CStrings
 
-        // Safety: The state machine is not null, since it's initialized
-        unsafe {
-            rcl_lifecycle_trigger_transition_by_label(
-                &mut *state_machine as *mut rcl_lifecycle_state_machine_s,
-                transition_label_cstr.as_ptr(),
-                publish_update,
-            )
-            .ok()?
-        };
+    //     // Safety: The state machine is not null, since it's initialized
+    //     unsafe {
+    //         rcl_lifecycle_trigger_transition_by_label(
+    //             &mut *state_machine as *mut rcl_lifecycle_state_machine_s,
+    //             transition_label_cstr.as_ptr(),
+    //             publish_update,
+    //         )
+    //         .ok()?
+    //     };
 
-        Ok(cb_return_code)
-    }
+    //     Ok(cb_return_code)
+    // }
 
-    fn execute_callback(&self, cb_id: u8, previous_state: &State) -> Transition {
-        match cb_id {
-            lifecycle_msgs::msg::State::TRANSITION_STATE_ACTIVATING => {
-                let activate = self.on_activate.lock().unwrap();
-                (activate)(previous_state)
-            }
-            lifecycle_msgs::msg::State::TRANSITION_STATE_CONFIGURING => {
-                let configure = self.on_configure.lock().unwrap();
-                (configure)(previous_state)
-            }
-            lifecycle_msgs::msg::State::TRANSITION_STATE_CLEANINGUP => {
-                let cleanup = self.on_cleanup.lock().unwrap();
-                (cleanup)(previous_state)
-            }
-            lifecycle_msgs::msg::State::TRANSITION_STATE_DEACTIVATING => {
-                let deactivate = self.on_deactivate.lock().unwrap();
-                (deactivate)(previous_state)
-            }
-            lifecycle_msgs::msg::State::TRANSITION_STATE_SHUTTINGDOWN => {
-                let shutdown = self.on_shutdown.lock().unwrap();
-                (shutdown)(previous_state)
-            }
-            _ => {
-                let error_handling = self.on_error.lock().unwrap();
-                (error_handling)(previous_state)
-            }
-        }
-    }
+    // fn execute_callback(&self, cb_id: u8, previous_state: &State) -> Transition {
+    //     match cb_id {
+    //         lifecycle_msgs::msg::State::TRANSITION_STATE_ACTIVATING => {
+    //             let activate = self.on_activate.lock().unwrap();
+    //             (activate)(previous_state)
+    //         }
+    //         lifecycle_msgs::msg::State::TRANSITION_STATE_CONFIGURING => {
+    //             let configure = self.on_configure.lock().unwrap();
+    //             (configure)(previous_state)
+    //         }
+    //         lifecycle_msgs::msg::State::TRANSITION_STATE_CLEANINGUP => {
+    //             let cleanup = self.on_cleanup.lock().unwrap();
+    //             (cleanup)(previous_state)
+    //         }
+    //         lifecycle_msgs::msg::State::TRANSITION_STATE_DEACTIVATING => {
+    //             let deactivate = self.on_deactivate.lock().unwrap();
+    //             (deactivate)(previous_state)
+    //         }
+    //         lifecycle_msgs::msg::State::TRANSITION_STATE_SHUTTINGDOWN => {
+    //             let shutdown = self.on_shutdown.lock().unwrap();
+    //             (shutdown)(previous_state)
+    //         }
+    //         _ => {
+    //             let error_handling = self.on_error.lock().unwrap();
+    //             (error_handling)(previous_state)
+    //         }
+    //     }
+    // }
 
-    fn trigger_transition_by_label(&mut self, transition_label: &str) -> Result<State, RclrsError> {
-        let transition = {
-            // Make sure that the state machine is initialized before doing anything
-            let state_machine = self.state_machine.lock().unwrap();
-            // SAFETY: No preconditions for this function
-            unsafe {
-                rcl_lifecycle_state_machine_is_initialized(&*state_machine).ok()?;
-            }
+    // fn trigger_transition_by_label(&mut self, transition_label: &str) -> Result<State, RclrsError> {
+    //     let transition = {
+    //         // Make sure that the state machine is initialized before doing anything
+    //         let state_machine = self.state_machine.lock().unwrap();
+    //         // SAFETY: No preconditions for this function
+    //         unsafe {
+    //             rcl_lifecycle_state_machine_is_initialized(&*state_machine).ok()?;
+    //         }
 
-            let c_transition_label = CString::new(transition_label).unwrap(); // This should be fine as the label originated from C
-                                                                              // SAFETY: No preconditions for this function
-            unsafe {
-                rcl_lifecycle_get_transition_by_label(
-                    state_machine.current_state,
-                    c_transition_label.as_ptr(),
-                )
-            }
-        };
+    //         let c_transition_label = CString::new(transition_label).unwrap(); // This should be fine as the label originated from C
+    //                                                                           // SAFETY: No preconditions for this function
+    //         unsafe {
+    //             rcl_lifecycle_get_transition_by_label(
+    //                 state_machine.current_state,
+    //                 c_transition_label.as_ptr(),
+    //             )
+    //         }
+    //     };
 
-        if !transition.is_null() {
-            // SAFETY: We have just confirmed this is not null
-            let transition_id = unsafe { (*transition).id as u8 };
-            self.change_state(transition_id)?;
-        }
-        self.get_current_state()
-    }
+    //     if !transition.is_null() {
+    //         // SAFETY: We have just confirmed this is not null
+    //         let transition_id = unsafe { (*transition).id as u8 };
+    //         self.change_state(transition_id)?;
+    //     }
+    //     self.get_current_state()
+    // }
 
-    fn trigger_transition_by_id(&mut self, transition_id: u8) -> Result<State, RclrsError> {
-        self.change_state(transition_id)?;
-        self.get_current_state()
-    }
+    // fn trigger_transition_by_id(&mut self, transition_id: u8) -> Result<State, RclrsError> {
+    //     self.change_state(transition_id)?;
+    //     self.get_current_state()
+    // }
 
     /// Creates a [`LifecycleNodeBuilder`][1] with the given name.
     ///
