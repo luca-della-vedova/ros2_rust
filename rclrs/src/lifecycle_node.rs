@@ -326,113 +326,136 @@ unsafe fn call_string_getter_with_handle(
 
 #[cfg(test)]
 mod tests {
-    use crate::{Node, vendor::lifecycle_msgs::srv::{GetAvailableStates, GetAvailableTransitions, GetState, ChangeState}};
+    use crate::{Context, Node, vendor::lifecycle_msgs::srv::{GetAvailableStates, GetAvailableTransitions, GetState, ChangeState}, create_node, spin};
 
     use super::*;
 
     fn assert_send<T: Send>() {}
     fn assert_sync<T: Sync>() {}
 
-    const LIFECYCLE_NODE_NAME: &str = "lc_talker";
-    const NODE_GET_STATE_TOPIC: &str = "/lc_talker/get_state";
-    const NODE_CHANGE_STATE_TOPIC: &str = "/lc_talker/change_state";
-    const NODE_GET_AVAILABLE_STATES_TOPIC: &str = "/lc_talker/get_available_states";
-    const NODE_GET_AVAILABLE_TRANSITIONS_TOPIC: &str = "/lc_talker/get_available_transitions";
-    const NODE_GET_TRANSITION_GRAPH_TOPIC: &str = "/lc_talker/get_transition_graph";
+    // const LIFECYCLE_NODE_NAME: &str = "lc_talker";
+    // const NODE_GET_STATE_TOPIC: &str = "/lc_talker/get_state";
+    // const NODE_CHANGE_STATE_TOPIC: &str = "/lc_talker/change_state";
+    // const NODE_GET_AVAILABLE_STATES_TOPIC: &str = "/lc_talker/get_available_states";
+    // const NODE_GET_AVAILABLE_TRANSITIONS_TOPIC: &str = "/lc_talker/get_available_transitions";
+    // const NODE_GET_TRANSITION_GRAPH_TOPIC: &str = "/lc_talker/get_transition_graph";
 
-    struct LifecycleServiceClient {
-        node: Node,
-        client_get_available_states: Arc<Client<GetAvailableStates>>,
-        client_get_available_transitions: Arc<Client<GetAvailableTransitions>>,
-        client_get_transition_graph: Arc<Client<GetAvailableTransitions>>,
-        client_get_state: Arc<Client<GetState>>,
-        client_change_state: Arc<Client<ChangeState>>,
-    }
+    // struct LifecycleServiceClient {
+    //     node: Node,
+    //     client_get_available_states: Arc<Client<GetAvailableStates>>,
+    //     client_get_available_transitions: Arc<Client<GetAvailableTransitions>>,
+    //     client_get_transition_graph: Arc<Client<GetAvailableTransitions>>,
+    //     client_get_state: Arc<Client<GetState>>,
+    //     client_change_state: Arc<Client<ChangeState>>,
+    // }
 
-    impl LifecycleServiceClient {
-        #[allow(clippy::new_ret_no_self)]
-        fn new(mut node: Node) -> Result<LifecycleServiceClient, RclrsError> {
-            let client_get_available_states = node.create_client::<lifecycle_msgs::srv::GetAvailableStates>(NODE_GET_AVAILABLE_STATES_TOPIC)?;
-            let client_get_available_transitions = node.create_client::<lifecycle_msgs::srv::GetAvailableTransitions>(NODE_GET_AVAILABLE_TRANSITIONS_TOPIC)?;
-            let client_get_transition_graph = node.create_client::<lifecycle_msgs::srv::GetAvailableTransitions>(NODE_GET_AVAILABLE_TRANSITIONS_TOPIC)?;
-            let client_get_state = node.create_client::<lifecycle_msgs::srv::GetState>(NODE_GET_STATE_TOPIC)?;
-            let client_change_state = node.create_client::<lifecycle_msgs::srv::ChangeState>(NODE_CHANGE_STATE_TOPIC)?;
-            let lifecycle_service_client = LifecycleServiceClient {
-                node,
-                client_get_available_states,
-                client_get_available_transitions,
-                client_get_transition_graph,
-                client_get_state,
-                client_change_state
-            };
-            Ok(lifecycle_service_client)
-        }
+    // impl LifecycleServiceClient {
+    //     #[allow(clippy::new_ret_no_self)]
+    //     fn new(mut node: Node) -> Result<LifecycleServiceClient, RclrsError> {
+    //         let client_get_available_states = node.create_client::<lifecycle_msgs::srv::GetAvailableStates>(NODE_GET_AVAILABLE_STATES_TOPIC)?;
+    //         let client_get_available_transitions = node.create_client::<lifecycle_msgs::srv::GetAvailableTransitions>(NODE_GET_AVAILABLE_TRANSITIONS_TOPIC)?;
+    //         let client_get_transition_graph = node.create_client::<lifecycle_msgs::srv::GetAvailableTransitions>(NODE_GET_AVAILABLE_TRANSITIONS_TOPIC)?;
+    //         let client_get_state = node.create_client::<lifecycle_msgs::srv::GetState>(NODE_GET_STATE_TOPIC)?;
+    //         let client_change_state = node.create_client::<lifecycle_msgs::srv::ChangeState>(NODE_CHANGE_STATE_TOPIC)?;
+    //         let lifecycle_service_client = LifecycleServiceClient {
+    //             node,
+    //             client_get_available_states,
+    //             client_get_available_transitions,
+    //             client_get_transition_graph,
+    //             client_get_state,
+    //             client_change_state
+    //         };
+    //         Ok(lifecycle_service_client)
+    //     }
 
-        async fn get_state(&self) -> lifecycle_msgs::msg::State {
-            let get_state_request = lifecycle_msgs::srv::GetState_Request::default();
-            let res = self.client_get_state.call_async(get_state_request).await;
-            match res {
-                Ok(x) => x.current_state,
-                Err(e) => {
-                    lifecycle_msgs::msg::State{
-                        id: lifecycle_msgs::msg::State::PRIMARY_STATE_UNKNOWN,
-                        label: format!("Error retrieving request: {e}")
-                    }
-                }
-            }
-        }
+    //     async fn get_state(&self) -> lifecycle_msgs::msg::State {
+    //         let get_state_request = lifecycle_msgs::srv::GetState_Request::default();
+    //         let res = self.client_get_state.call_async(get_state_request).await;
+    //         match res {
+    //             Ok(x) => x.current_state,
+    //             Err(e) => {
+    //                 lifecycle_msgs::msg::State{
+    //                     id: lifecycle_msgs::msg::State::PRIMARY_STATE_UNKNOWN,
+    //                     label: format!("Error retrieving request: {e}")
+    //                 }
+    //             }
+    //         }
+    //     }
 
-        async fn change_state(&self, transition: lifecycle_msgs::msg::Transition) -> bool {
-            let mut change_state_request = lifecycle_msgs::srv::ChangeState_Request::default();
-            change_state_request.transition.id = transition.id;
-            let res = self.client_change_state.call_async(change_state_request).await;
-            match res {
-                Ok(x) => x.success,
-                Err(_) => false,
-            }
-        }
+    //     async fn change_state(&self, transition: lifecycle_msgs::msg::Transition) -> bool {
+    //         let mut change_state_request = lifecycle_msgs::srv::ChangeState_Request::default();
+    //         change_state_request.transition.id = transition.id;
+    //         let res = self.client_change_state.call_async(change_state_request).await;
+    //         match res {
+    //             Ok(x) => x.success,
+    //             Err(_) => false,
+    //         }
+    //     }
 
-        async fn get_available_states(&self) -> Vec<lifecycle_msgs::msg::State> {
-            let get_available_states_request = lifecycle_msgs::srv::GetAvailableStates_Request::default();
-            let res = self.client_get_available_states.call_async(get_available_states_request).await;
-            match res {
-                Ok(x) => x.available_states,
-                Err(_) => {
-                    let x: Vec<lifecycle_msgs::msg::State> = Vec::new();
-                    x
-                }
-            }
-        }
+    //     async fn get_available_states(&self) -> Vec<lifecycle_msgs::msg::State> {
+    //         let get_available_states_request = lifecycle_msgs::srv::GetAvailableStates_Request::default();
+    //         let res = self.client_get_available_states.call_async(get_available_states_request).await;
+    //         match res {
+    //             Ok(x) => x.available_states,
+    //             Err(_) => {
+    //                 let x: Vec<lifecycle_msgs::msg::State> = Vec::new();
+    //                 x
+    //             }
+    //         }
+    //     }
 
-        async fn get_available_transitions(&self) -> Vec<lifecycle_msgs::msg::TransitionDescription> {
-            let get_available_transitions_request = lifecycle_msgs::srv::GetAvailableTransitions_Request::default();
-            let res = self.client_get_available_transitions.call_async(get_available_transitions_request).await;
-            match res {
-                Ok(x) => x.available_transitions,
-                Err(_) => {
-                    let x: Vec<lifecycle_msgs::msg::TransitionDescription> = Vec::new();
-                    x
-                }
-            }
-        }
+    //     async fn get_available_transitions(&self) -> Vec<lifecycle_msgs::msg::TransitionDescription> {
+    //         let get_available_transitions_request = lifecycle_msgs::srv::GetAvailableTransitions_Request::default();
+    //         let res = self.client_get_available_transitions.call_async(get_available_transitions_request).await;
+    //         match res {
+    //             Ok(x) => x.available_transitions,
+    //             Err(_) => {
+    //                 let x: Vec<lifecycle_msgs::msg::TransitionDescription> = Vec::new();
+    //                 x
+    //             }
+    //         }
+    //     }
 
-        // Internally identical to `get_available_transitions`, as this was how it was written in `rclcpp`
-        async fn get_transition_graph(&self) -> Vec<lifecycle_msgs::msg::TransitionDescription> {
-            let get_available_transitions_request = lifecycle_msgs::srv::GetAvailableTransitions_Request::default();
-            let res = self.client_get_available_transitions.call_async(get_available_transitions_request).await;
-            match res {
-                Ok(x) => x.available_transitions,
-                Err(_) => {
-                    let x: Vec<lifecycle_msgs::msg::TransitionDescription> = Vec::new();
-                    x
-                }
-            }
-        }
-    }
+    //     // Internally identical to `get_available_transitions`, as this was how it was written in `rclcpp`
+    //     async fn get_transition_graph(&self) -> Vec<lifecycle_msgs::msg::TransitionDescription> {
+    //         let get_available_transitions_request = lifecycle_msgs::srv::GetAvailableTransitions_Request::default();
+    //         let res = self.client_get_available_transitions.call_async(get_available_transitions_request).await;
+    //         match res {
+    //             Ok(x) => x.available_transitions,
+    //             Err(_) => {
+    //                 let x: Vec<lifecycle_msgs::msg::TransitionDescription> = Vec::new();
+    //                 x
+    //             }
+    //         }
+    //     }
+    // }
+
+    // fn set_up_test_client(context: &Context) -> Result<LifecycleServiceClient, RclrsError> {
+    //     let test_client_node = create_node(&context, "lifecycle_test_client")?;
+    //     let lifecycle_test = LifecycleServiceClient::new(test_client_node)?;
+    //     Ok(lifecycle_test)
+    // }
 
     #[test]
     fn lifecycle_node_is_send_and_sync() {
         assert_send::<LifecycleNode>();
         assert_sync::<LifecycleNode>();
     }
+
+    // #[test]
+    // fn able_to_get_available_states() -> Result<(), Box<dyn Error>> {
+    //     let context = Context::new([])?;
+    //     let node = create_node(&context, "lifecycle_test_client")?;
+    //     let lifecycle_test_client = LifecycleServiceClient::new(node)?;
+    //     // let states = tokio_test::block_on(lifecycle_test_client.get_available_states());
+    //     let states_future = lifecycle_test_client.get_available_states();
+    //     let rclrs_spin = tokio_test::task::spawn(move || spin(&lifecycle_test_client.node));
+    //     let states = tokio_test::block_on(states_future);
+    //     if states.len() != 11 {
+    //         return Err("incorrect number of states returned".into());
+    //     }
+
+    //     Ok(())
+
+    // }
 }

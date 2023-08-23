@@ -31,6 +31,7 @@ use std::time::Duration;
 pub use arguments::*;
 pub use client::*;
 pub use context::*;
+pub use lifecycle_node::*;
 pub use error::*;
 pub use executor::*;
 pub use node::*;
