@@ -24,7 +24,7 @@ use crate::vendor::{lifecycle_msgs, rcl_interfaces};
 use crate::{rcl_bindings::*, Context, RclrsError, ToResult, resolve_parameter_overrides};
 use crate::lifecycle_node::{call_string_getter_with_handle, LifecycleNode};
 
-use super::{LifecycleCallback, on_change_state};
+use super::LifecycleCallback;
 
 /// A builder for creating a [`LifecycleNode`][1].
 /// 
@@ -245,12 +245,14 @@ impl LifecycleNodeBuilder {
         if self.enable_communication_interface {
             // Change State
             {
-                // let srv_change_state = crate::Service::new(lifecycle_node.rcl_node_mtx, , callback)
-                let cb = |&header: &rmw_request_id_t, req: ChangeState_Request| -> ChangeState_Response {
-                    let resp = on_change_state(&lifecycle_node, &header, &req);
-                    resp
-                };
-                lifecycle_node.create_service::<ChangeState, _>("test", cb);
+                // // let srv_change_state = crate::Service::new(lifecycle_node.rcl_node_mtx, , callback)
+                // let cb = |&header: &rmw_request_id_t, req: ChangeState_Request| -> ChangeState_Response {
+                //     let resp = on_change_state(&lifecycle_node, &header, &req);
+                //     resp
+                // };
+                lifecycle_node.create_service::<ChangeState, _>(
+                    "test",
+                |&header, req| lifecycle_node.on_change_state(&header, &req));
             }
         }
 
