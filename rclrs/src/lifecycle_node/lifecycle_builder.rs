@@ -19,19 +19,19 @@ use std::sync::{Arc, Mutex};
 
 use rosidl_runtime_rs::{RmwMessage, Service};
 
-use crate::vendor::lifecycle_msgs::srv::{ChangeState_Request, ChangeState_Response, ChangeState};
-use crate::vendor::{lifecycle_msgs, rcl_interfaces};
-use crate::{rcl_bindings::*, Context, RclrsError, ToResult, resolve_parameter_overrides};
 use crate::lifecycle_node::{call_string_getter_with_handle, LifecycleNode};
+use crate::vendor::lifecycle_msgs::srv::{ChangeState, ChangeState_Request, ChangeState_Response};
+use crate::vendor::{lifecycle_msgs, rcl_interfaces};
+use crate::{rcl_bindings::*, resolve_parameter_overrides, Context, RclrsError, ToResult};
 
 use super::LifecycleCallback;
 
 /// A builder for creating a [`LifecycleNode`][1].
-/// 
+///
 /// The builder pattern allows selectively setting some fields, and leaving all others at their default values.
 /// This struct instance can be created via [`LifecycleNode::builder()`][2].
-/// 
-/// 
+///
+///
 /// [1]: crate::LifecycleNode
 /// [2]: crate::LifecycleNode::builder
 pub struct LifecycleNodeBuilder {
@@ -51,21 +51,20 @@ pub struct LifecycleNodeBuilder {
 }
 
 impl LifecycleNodeBuilder {
-
     /// Creates a builder for a lifecycle node with the given name.
-    /// 
+    ///
     /// See the [`Node` docs][1] for general information on node names
-    /// 
+    ///
     /// # Rules for valid node names
-    /// 
+    ///
     /// The rules for a valid node name are checked by the [`rmw_validate_node_name()`][2]
     /// function. They are:
     /// - Must contain only the `a-z`, `A-Z`, `0-9`, and `_` characters
     /// - Must not be empty and not be longer than `RMW_NODE_NAME_MAX_NAME_LENGTH`
     /// - Must not start with a number
-    /// 
+    ///
     /// Note that node name validation is delayed until [`LifecycleNodeBuilder::build()`][3].
-    /// 
+    ///
     /// [1]: crate::Node#naming
     /// [2]: https://docs.ros2.org/latest/api/rmw/validate__node__name_8h.html#a5690a285aed9735f89ef11950b6e39e3
     /// [3]: LifecycleNodeBuilder::build
@@ -88,24 +87,24 @@ impl LifecycleNodeBuilder {
     }
 
     /// Sets the node namespace.
-    /// 
+    ///
     /// See the [`Node` docs][1] for general information on namespaces.
-    /// 
+    ///
     /// # Rules for valid namespaces
-    /// 
+    ///
     /// The rules for a valid node namespace are based on the [rules for a valid topic][2]
     /// and are checked by the [`rmw_validate_namespace()`][3] function. However, a namespace
     /// without a leading forward slash is automatically changed to have a leading forward slash
     /// before it is checked with this function.
-    /// 
+    ///
     /// Thus, the effective rules are:
     /// - Must contain only the `a-z`, `A-Z`, `0-9`, `_`, and `/` characters
     /// - Must not have a number at the beginning, or after a `/`
     /// - Must not contain two or more `/` characters in a row
     /// - Must not have a `/` character at the end, except if `/` is the full namespace
-    /// 
+    ///
     /// Note that namespace validation is delayed until [`NodeBuilder::build()`][4].
-    /// 
+    ///
     /// [1]: crate::Node#naming
     /// [2]: http://design.ros2.org/articles/topic_and_service_names.html
     /// [3]: https://docs.ros2.org/latest/api/rmw/validate__namespace_8h.html#a043f17d240cf13df01321b19a469ee49
@@ -116,9 +115,9 @@ impl LifecycleNodeBuilder {
     }
 
     /// Enables or disables using global arguments.
-    /// 
+    ///
     /// The "global" arguments are those used in [creating the context][1].
-    /// 
+    ///
     /// [1]: crate::Context::new
     pub fn use_global_arguments(mut self, enable: bool) -> Self {
         self.use_global_arguments = enable;
@@ -126,13 +125,13 @@ impl LifecycleNodeBuilder {
     }
 
     /// Sets node-specific command line arguments.
-    /// 
+    ///
     /// These arguments are parsed the same way as those for [`Context::new()`][1].
     /// However, the node-specific command line arguments have higher precedence than the arguments
     /// used in creating the context.
-    /// 
+    ///
     /// For more details about command line arguments, see [here][2].
-    /// 
+    ///
     /// [1]: crate::Context::new
     /// [2]: https://design.ros2.org/articles/ros_command_line_arguments.html
     pub fn arguments(mut self, arguments: impl IntoIterator<Item = String>) -> Self {
@@ -141,10 +140,10 @@ impl LifecycleNodeBuilder {
     }
 
     /// Enables or disables logging to rosout.
-    /// 
+    ///
     /// When enabled, log messages are published to the `/rosout` topic in addition to
     /// standard output.
-    /// 
+    ///
     /// This option is currently unused in `rclrs`
     pub fn enable_rosout(mut self, enable: bool) -> Self {
         self.enable_rosout = enable;
@@ -160,11 +159,11 @@ impl LifecycleNodeBuilder {
         let node_namespace =
             CString::new(self.namespace.as_str()).map_err(|err| RclrsError::StringContainsNul {
                 err,
-                s: self.namespace.clone()
+                s: self.namespace.clone(),
             })?;
         let rcl_node_options = self.create_rcl_node_options()?;
         let rcl_context = &mut *self.context.lock().unwrap();
-        
+
         // Safety: Getting a zero-initialized value is always safe.
         let mut rcl_node = unsafe { rcl_get_zero_initialized_node() };
         unsafe {
@@ -178,29 +177,46 @@ impl LifecycleNodeBuilder {
                 node_namespace.as_ptr(),
                 rcl_context,
                 &rcl_node_options,
-            ).ok()?;
+            )
+            .ok()?;
         }
 
         let _parameter_map = unsafe {
             let fqn = call_string_getter_with_handle(&rcl_node, rcl_node_get_fully_qualified_name);
-            resolve_parameter_overrides(&fqn,
+            resolve_parameter_overrides(
+                &fqn,
                 &rcl_node_options.arguments,
                 &rcl_context.global_arguments,
             )?
         };
         let rcl_node_mtx = Arc::new(Mutex::new(rcl_node));
-        
-        let on_activate = self.on_activate.ok_or("The \"on_activate\" transition is required for building")?;
-        let on_cleanup = self.on_cleanup.ok_or("The \"on_cleanup\" transition is required for building.")?;
-        let on_configure = self.on_configure.ok_or("The \"on_configure\" transition is required for building.")?;
-        let on_deactivate = self.on_deactivate.ok_or("The \"on_deactivate\" transition is required for building.")?;
-        let on_error = self.on_error.ok_or("The \"on_error\" transition is required for building.")?;
-        let on_shutdown = self.on_shutdown.ok_or("The \"on_shutdown\" transition is required for building.")?;
+
+        let on_activate = self
+            .on_activate
+            .ok_or("The \"on_activate\" transition is required for building")?;
+        let on_cleanup = self
+            .on_cleanup
+            .ok_or("The \"on_cleanup\" transition is required for building.")?;
+        let on_configure = self
+            .on_configure
+            .ok_or("The \"on_configure\" transition is required for building.")?;
+        let on_deactivate = self
+            .on_deactivate
+            .ok_or("The \"on_deactivate\" transition is required for building.")?;
+        let on_error = self
+            .on_error
+            .ok_or("The \"on_error\" transition is required for building.")?;
+        let on_shutdown = self
+            .on_shutdown
+            .ok_or("The \"on_shutdown\" transition is required for building.")?;
 
         // SAFETY: Getting a zero-initialized state machine is always safe
-        let state_machine = Arc::new(Mutex::new(unsafe { rcl_lifecycle_get_zero_initialized_state_machine() }));
+        let state_machine = Arc::new(Mutex::new(unsafe {
+            rcl_lifecycle_get_zero_initialized_state_machine()
+        }));
         // SAFETY: Getting the default state machine options is always safe
-        let mut state_machine_options = unsafe { rcl_lifecycle_get_default_state_machine_options() };
+        let mut state_machine_options =
+            unsafe { rcl_lifecycle_get_default_state_machine_options() };
         state_machine_options.enable_com_interface = self.enable_communication_interface;
         // SAFETY: Getting the default allocator is always safe
         // TODO(jhdcs): If we ever allow the use of a non-default allocator, this will need to change
@@ -223,7 +239,6 @@ impl LifecycleNodeBuilder {
             ).ok()?;
         }
 
-
         let mut lifecycle_node = LifecycleNode {
             rcl_node_mtx,
             rcl_context_mtx: self.context.clone(),
@@ -240,8 +255,7 @@ impl LifecycleNodeBuilder {
             state_machine,
             _parameter_map,
         };
-        
-        
+
         if self.enable_communication_interface {
             // Change State
             {
@@ -250,15 +264,14 @@ impl LifecycleNodeBuilder {
                 //     let resp = on_change_state(&lifecycle_node, &header, &req);
                 //     resp
                 // };
-                lifecycle_node.create_service::<ChangeState, _>(
-                    "test",
-                |&header, req| lifecycle_node.on_change_state(&header, &req));
+                lifecycle_node.create_service::<ChangeState, _>("test", |&header, req| {
+                    lifecycle_node.on_change_state(&header, &req)
+                });
             }
         }
 
         Ok(lifecycle_node)
     }
-    
 
     fn create_rcl_node_options(&self) -> Result<rcl_node_options_t, RclrsError> {
         // SAFETY: No preconditions for this function.

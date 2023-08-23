@@ -13,9 +13,14 @@
 // DISTRIBUTION A. Approved for public release; distribution unlimited.
 // OPSEC #4584.
 
-use std::{sync::{Arc, Mutex}, ffi::{CString, c_void, CStr}, mem::size_of, ptr::{null, null_mut}};
+use std::{
+    ffi::{c_void, CStr, CString},
+    mem::size_of,
+    ptr::null_mut,
+    sync::{Arc, Mutex},
+};
 
-use crate::{rcl_bindings::*, RclrsError, ToResult, RclReturnCode};
+use crate::{rcl_bindings::*, RclReturnCode, RclrsError, ToResult};
 
 use super::state::State;
 
@@ -40,24 +45,30 @@ impl Transition {
         let transition_label =
             CString::new(label).map_err(|err| RclrsError::StringContainsNul {
                 err,
-                s:label.to_owned(),
+                s: label.to_owned(),
             })?;
-        
+
         // SAFETY: Getting the default allocator for RCL should be safe
         let allocator = unsafe { rcutils_get_default_allocator() };
 
         unsafe {
-            let transition_handle = allocator.allocate.unwrap()(size_of::<rcl_lifecycle_transition_t>(), allocator.state);
+            let transition_handle = allocator.allocate.unwrap()(
+                size_of::<rcl_lifecycle_transition_t>(),
+                allocator.state,
+            );
             // SAFETY: We hav already allocated the proper amount of space in the previous instruction
-            let transition_handle = std::mem::transmute::<*mut c_void, *mut rcl_lifecycle_transition_t>(transition_handle);
+            let transition_handle = std::mem::transmute::<
+                *mut c_void,
+                *mut rcl_lifecycle_transition_t,
+            >(transition_handle);
 
             if transition_handle.is_null() {
                 return Err(RclrsError::RclError {
                     code: RclReturnCode::BadAlloc,
                     msg: None,
-                })
+                });
             };
-            
+
             // SAFETY: transition_handle has already been allocated by this point, and has been checked to be non-null
             rcl_lifecycle_transition_init(
                 transition_handle,
@@ -65,26 +76,33 @@ impl Transition {
                 transition_label.as_c_str().as_ptr(),
                 null_mut(),
                 null_mut(),
-                &allocator).ok()?;
-        
+                &allocator,
+            )
+            .ok()?;
+
             Ok(Transition {
                 id,
                 label: label.to_owned(),
                 start: None,
                 goal: None,
                 allocator,
-                transition_handle: Arc::new(Mutex::new(transition_handle))})
+                transition_handle: Arc::new(Mutex::new(transition_handle)),
+            })
         }
-
     }
 
     // Creates a new [`Transition`] object from a raw pointer to an [`rcl_lifecycle_transition_t`] object.
     // SAFETY: `rcl_lifecycle_transition_handle must not be null
-    pub unsafe fn from_raw(rcl_lifecycle_transition_handle: *mut rcl_lifecycle_transition_t) -> Self {
+    pub unsafe fn from_raw(
+        rcl_lifecycle_transition_handle: *mut rcl_lifecycle_transition_t,
+    ) -> Self {
         // SAFETY: Getting the default allocator for RCL should be safe
         let allocator = rcutils_get_default_allocator();
         // SAFETY: rcl_lifecycle_transition_handle must not be null - see safety comment for the function
-        let label = CStr::from_ptr((*rcl_lifecycle_transition_handle).label).to_owned().to_string_lossy().to_string();
+        let label = CStr::from_ptr((*rcl_lifecycle_transition_handle).label)
+            .to_owned()
+            .to_string_lossy()
+            .to_string();
         // SAFETY: rcl_lifecycle_transition_handle must not be null - see safety comment for the function
         let id = (*rcl_lifecycle_transition_handle).id as u8;
         // SAFETY: rcl_lifecycle_transition_handle must not be null - see safety comment for the function
@@ -141,10 +159,11 @@ impl Transition {
         if transition_handle.is_null() {
             return Ok(());
         }
-        
+
         // SAFETY: By this point, we should have confirmed that transition_handle still exists
         unsafe {
-            rcl_lifecycle_transition_fini(transition_handle.as_mut().unwrap(), &self.allocator).ok()?;
+            rcl_lifecycle_transition_fini(transition_handle.as_mut().unwrap(), &self.allocator)
+                .ok()?;
         }
 
         Ok(())

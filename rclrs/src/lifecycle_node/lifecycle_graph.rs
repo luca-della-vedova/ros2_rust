@@ -19,4 +19,3 @@ use std::slice;
 
 use crate::rcl_bindings::*;
 use crate::{lifecycle_node::LifecycleNode, RclrsError, ToResult};
-

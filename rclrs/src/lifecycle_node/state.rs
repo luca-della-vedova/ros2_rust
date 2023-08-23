@@ -13,9 +13,13 @@
 // DISTRIBUTION A. Approved for public release; distribution unlimited.
 // OPSEC #4584.
 
-use std::{ffi::{CString, c_void, CStr}, mem::size_of, sync::{Arc, Mutex}};
+use std::{
+    ffi::{c_void, CStr, CString},
+    mem::size_of,
+    sync::{Arc, Mutex},
+};
 
-use crate::{rcl_bindings::*, RclrsError, RclReturnCode, error::ToResult};
+use crate::{error::ToResult, rcl_bindings::*, RclReturnCode, RclrsError};
 
 pub struct State {
     id: u8,
@@ -33,30 +37,42 @@ impl Drop for State {
 impl State {
     #[allow(clippy::new_ret_no_self)]
     pub fn new(id: u8, label: &str) -> Result<State, RclrsError> {
-        let state_label =
-            CString::new(label).map_err(|err| RclrsError::StringContainsNul {
-                err,
-                s: label.to_owned(),
-            })?;
+        let state_label = CString::new(label).map_err(|err| RclrsError::StringContainsNul {
+            err,
+            s: label.to_owned(),
+        })?;
 
         // SAFETY: Getting the default allocator for RCL should be safe
         let allocator = unsafe { rcutils_get_default_allocator() };
 
         unsafe {
-            let state_handle = allocator.allocate.unwrap()(size_of::<rcl_lifecycle_state_t>(), allocator.state);
+            let state_handle =
+                allocator.allocate.unwrap()(size_of::<rcl_lifecycle_state_t>(), allocator.state);
             // SAFETY: We have already allocated the proper amount of space in the previous instruction
-            let state_handle = std::mem::transmute::<*mut c_void, *mut rcl_lifecycle_state_t>(state_handle);
+            let state_handle =
+                std::mem::transmute::<*mut c_void, *mut rcl_lifecycle_state_t>(state_handle);
 
             if state_handle.is_null() {
                 return Err(RclrsError::RclError {
                     code: RclReturnCode::BadAlloc,
-                    msg: None, 
-                }
-            )};
-            
+                    msg: None,
+                });
+            };
+
             // SAFETY: state_handle has already been allocated by this point, and has been checked to be non-null
-            rcl_lifecycle_state_init(state_handle, id, state_label.as_c_str().as_ptr(), &allocator).ok()?;
-            Ok(State { id, label: state_label.to_string_lossy().to_string(), allocator, state_handle: Arc::new(Mutex::new(state_handle)) })
+            rcl_lifecycle_state_init(
+                state_handle,
+                id,
+                state_label.as_c_str().as_ptr(),
+                &allocator,
+            )
+            .ok()?;
+            Ok(State {
+                id,
+                label: state_label.to_string_lossy().to_string(),
+                allocator,
+                state_handle: Arc::new(Mutex::new(state_handle)),
+            })
         }
     }
 

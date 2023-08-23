@@ -43,7 +43,7 @@ pub(crate) enum PrimaryState {
 /// state there is expected to be no stored state.
 ///
 /// # Valid transitions out:
-/// - The node may transition to the [`Inactive`] state via the [`Transitions::Configure`] 
+/// - The node may transition to the [`Inactive`] state via the [`Transitions::Configure`]
 /// transition.
 /// - The node may transition to the [`Finalized`] state via the [`Transitions::Shutdown`]
 /// transition.
@@ -194,7 +194,7 @@ pub(crate) struct Deactivating {}
 ///
 /// Transitions to [`ErrorProcessing`] may be caused by error return codes in callbacks, as well
 /// as methods within a callback or an uncaught exception.
-/// 
+///
 /// # Valid transitions out:
 /// - If the `onError` callback succeeds the node will transition to [`Unconfigured`]. It is
 /// expected that the `onError` will clean up all state from any previous state. As such, if

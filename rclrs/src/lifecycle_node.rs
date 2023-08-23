@@ -15,23 +15,40 @@
 
 mod lifecycle_builder;
 mod lifecycle_graph;
-mod state_machine;
 mod state;
+mod state_machine;
 mod transition;
 
-use std::{os::raw::c_char, ffi::{CStr, CString}, sync::{Arc, Mutex, Weak}, fmt, error::Error};
-use crate::{rcl_bindings::*, ClientBase, GuardCondition, ServiceBase, SubscriptionBase, ParameterOverrideMap, Context, RclrsError, Client, QoSProfile, Publisher,  Subscription, SubscriptionCallback, vendor::lifecycle_msgs::{self, srv::{ChangeState_Request, GetState_Request, GetState_Response, GetAvailableStates_Request, GetAvailableStates_Response, GetAvailableTransitions_Request, GetAvailableTransitions_Response, ChangeState_Response, ChangeState}}, ToResult};
 use self::{lifecycle_builder::LifecycleNodeBuilder, state::State};
+use crate::{
+    rcl_bindings::*,
+    vendor::lifecycle_msgs::{
+        self,
+        srv::{
+            ChangeState_Request, ChangeState_Response, GetAvailableStates_Request,
+            GetAvailableStates_Response, GetAvailableTransitions_Request,
+            GetAvailableTransitions_Response, GetState_Request, GetState_Response,
+        },
+    },
+    Client, ClientBase, Context, GuardCondition, ParameterOverrideMap, Publisher, QoSProfile,
+    RclrsError, ServiceBase, Subscription, SubscriptionBase, SubscriptionCallback, ToResult,
+};
+use std::{
+    error::Error,
+    ffi::{CStr, CString},
+    fmt,
+    os::raw::c_char,
+    sync::{Arc, Mutex, Weak},
+};
 
-use rosidl_runtime_rs::Message;
 use lifecycle_msgs::msg::Transition;
+use rosidl_runtime_rs::Message;
 
 // The functions accessing this type, including drop(), shouldn't care about the thread
 // they are running in. Therefore, this type can be safely sent to another thread.
 unsafe impl Send for rcl_lifecycle_state_machine_t {}
 
 type LifecycleCallback = Box<dyn Fn(&State) -> Transition + Send + 'static>;
-
 
 pub struct LifecycleNode {
     pub(crate) rcl_node_mtx: Arc<Mutex<rcl_node_t>>,
@@ -55,7 +72,11 @@ impl Drop for LifecycleNode {
         let mut node = self.rcl_node_mtx.lock().unwrap();
         let mut state_machine = self.state_machine.lock().unwrap();
         // SAFETY: No preconditions for this function
-        unsafe { rcl_lifecycle_state_machine_fini(&mut *state_machine, &mut *node).ok().unwrap();}
+        unsafe {
+            rcl_lifecycle_state_machine_fini(&mut *state_machine, &mut *node)
+                .ok()
+                .unwrap();
+        }
     }
 }
 
@@ -68,25 +89,24 @@ impl PartialEq for LifecycleNode {
 }
 
 impl fmt::Debug for LifecycleNode {
-    fn fmt (&self, f: &mut fmt::Formatter<'_>) -> Result<(), fmt::Error> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> Result<(), fmt::Error> {
         f.debug_struct("Node")
-        .field("fully_qualified_name", &self.fully_qualified_name())
-        .finish()
+            .field("fully_qualified_name", &self.fully_qualified_name())
+            .finish()
     }
 }
 
 impl LifecycleNode {
     /// Creates a new lifecycle node in the empty namespace.
-    /// 
+    ///
     /// See [`LifecycleNodeBuilder::new()`] for documentation.
     #[allow(clippy::new_ret_no_self)]
     pub fn new(context: &Context, node_name: &str) -> Result<LifecycleNode, Box<dyn Error>> {
         Self::builder(context, node_name).build()
     }
 
-
     /// Returns the name of the lifecycle node.
-    /// 
+    ///
     /// This returns the name after remapping, so it is not necessarily the same as the name that
     /// was used when creating the lifecycle node.
     pub fn name(&self) -> String {
@@ -94,7 +114,7 @@ impl LifecycleNode {
     }
 
     /// Returns the namespace of the lifecycle node.
-    /// 
+    ///
     /// This returns the namespace after remapping, so it is not necessarily the same as the
     /// namespace that was used when creating the lifecycle node.
     pub fn namepsace(&self) -> String {
@@ -102,7 +122,7 @@ impl LifecycleNode {
     }
 
     /// Returns the fully qualified name of the lifecycle node.
-    /// 
+    ///
     /// The fully qualified name of the node is the lifecycle node namespace combined with the node name.
     /// It is subject to the remappings shown in [`LifecycleNode::name()`] and [`LifecycleNode::namespace()`]
     pub fn fully_qualified_name(&self) -> String {
@@ -118,7 +138,7 @@ impl LifecycleNode {
     }
 
     /// Creates a [`Client`][1]
-    /// 
+    ///
     /// [1]: crate::Client
     pub fn create_client<T>(&mut self, topic: &str) -> Result<Arc<Client<T>>, RclrsError>
     where
@@ -131,12 +151,12 @@ impl LifecycleNode {
     }
 
     /// Creates a [`GuardCondition`][1] with no callback.
-    /// 
+    ///
     /// A weak pointer to the `GuardCondition`is stored within this lifecycle node.
     /// When this lifecycle node is added to a wait set (e.g. when calling `spin_once`[2]
     /// with this lifecycle node as an argument), the guard condition can be used to
     /// interrupt the wait.
-    /// 
+    ///
     /// [1]: crate::GuardCondition
     /// [2]: crate::spin_once
     pub fn create_guard_condition(&mut self) -> Arc<GuardCondition> {
@@ -150,12 +170,12 @@ impl LifecycleNode {
     }
 
     /// Creates a [`GuardCondition`][1] with a callback.
-    /// 
+    ///
     /// A weak pointer to the `GuardCondition` is stored within this lifecycle node.
     /// When this lifecycle node is added to a wait set (e.g. when calling `spin_once` [2]
     /// with this lifecycle node as an argument), the guard condition can be used to
     /// interrupt the wait.
-    /// 
+    ///
     /// [1]: crate::GuardCondition
     /// [2]: crate::spin_once
     pub fn create_guard_condition_with_callback<F>(&mut self, callback: F) -> Arc<GuardCondition>
@@ -172,7 +192,7 @@ impl LifecycleNode {
     }
 
     /// Creates a [`Publisher`][1].
-    /// 
+    ///
     /// [1]: crate::Publisher
     pub fn create_publisher<T>(
         &self,
@@ -186,7 +206,7 @@ impl LifecycleNode {
     }
 
     /// Creates a [`Service`][1].
-    /// 
+    ///
     /// [1]: crate::Service
     pub fn create_service<T, F>(
         &mut self,
@@ -208,7 +228,7 @@ impl LifecycleNode {
     }
 
     /// Creates a [`Subscription`][1]
-    /// 
+    ///
     /// [1]: crate::Subscription
     pub fn create_subscription<T, Args>(
         &mut self,
@@ -220,10 +240,10 @@ impl LifecycleNode {
         T: Message,
     {
         let subscription = Arc::new(Subscription::<T>::new(
-                Arc::clone(&self.rcl_node_mtx),
-                topic,
-                qos,
-                callback,
+            Arc::clone(&self.rcl_node_mtx),
+            topic,
+            qos,
+            callback,
         )?);
         self.subscriptions
             .push(Arc::downgrade(&subscription) as Weak<dyn SubscriptionBase>);
@@ -257,10 +277,10 @@ impl LifecycleNode {
     }
 
     /// Returns the ROS domain ID that the lifecycle node is using.
-    /// 
+    ///
     /// The domain ID controls which nodes can send messages to each other, see the [ROS 2 concept article][1].
     /// it can be set through the `ROS_DOMAIN_ID` environment variable.
-    /// 
+    ///
     /// [1]: https://docs.ros.org/en/rolling/Concepts/About-Domain-ID.html
     pub fn domain_id(&self) -> usize {
         let rcl_node = &*self.rcl_node_mtx.lock().unwrap();
@@ -280,10 +300,14 @@ impl LifecycleNode {
         req: &ChangeState_Request,
     ) -> ChangeState_Response {
         let mut resp = ChangeState_Response::default();
-        let transition_id = {            
+        let transition_id = {
             let state_machine = &*self.state_machine.lock().unwrap();
             // SAFETY: No preconditions for this function.
-            unsafe { rcl_lifecycle_state_machine_is_initialized(state_machine).ok().unwrap() };
+            unsafe {
+                rcl_lifecycle_state_machine_is_initialized(state_machine)
+                    .ok()
+                    .unwrap()
+            };
             let mut transition_id = req.transition.id;
 
             // If there's a label attached to the request, we check the transition attached to this label.
@@ -297,7 +321,10 @@ impl LifecycleNode {
                 let label_cstr = CString::new(req.transition.label.clone()).unwrap();
                 // SAFETY: No preconditions for this function - however it may return null
                 let rcl_transition = unsafe {
-                    rcl_lifecycle_get_transition_by_label(state_machine.current_state, label_cstr.as_ptr())
+                    rcl_lifecycle_get_transition_by_label(
+                        state_machine.current_state,
+                        label_cstr.as_ptr(),
+                    )
                 };
                 if rcl_transition.is_null() {
                     resp.success = false;
@@ -325,18 +352,18 @@ impl LifecycleNode {
 
         // SAFETY: The state machine has been confirmed to be initialized by this point, so the
         // label pointer should not be null
-        let label = unsafe {CStr::from_ptr((*state_machine.current_state).label).to_owned().to_string_lossy().to_string() };
+        let label = unsafe {
+            CStr::from_ptr((*state_machine.current_state).label)
+                .to_owned()
+                .to_string_lossy()
+                .to_string()
+        };
         // SAFETY: The state machine has been confirmed to be initialized by this point, so the id
         // pointer should not be null.
         let id = unsafe { (*state_machine.current_state).id };
-        let current_state = lifecycle_msgs::msg::State {
-            id,
-            label,
-        };
+        let current_state = lifecycle_msgs::msg::State { id, label };
 
-        let resp = GetState_Response {
-            current_state,
-        };
+        let resp = GetState_Response { current_state };
 
         Ok(resp)
     }
@@ -354,28 +381,28 @@ impl LifecycleNode {
         for i in 0..state_machine.transition_map.states_size as isize {
             // SAFETY: The state machine has been confirmed to be initialized by this point, so the
             // label pointer should not be null
-            let label = unsafe { CStr::from_ptr((*state_machine.transition_map.states.offset(i)).label).to_owned().to_string_lossy().to_string() };
+            let label = unsafe {
+                CStr::from_ptr((*state_machine.transition_map.states.offset(i)).label)
+                    .to_owned()
+                    .to_string_lossy()
+                    .to_string()
+            };
             // SAFETY: The state machine has been confirmed to be initialized by this point, so the
             // id pointer should not be null
             let id = unsafe { (*state_machine.transition_map.states.offset(i)).id };
-            let available_state = lifecycle_msgs::msg::State {
-                id,
-                label,
-            };
+            let available_state = lifecycle_msgs::msg::State { id, label };
             available_states.push(available_state);
-        };
+        }
 
-        let resp = GetAvailableStates_Response {
-            available_states,
-        };
+        let resp = GetAvailableStates_Response { available_states };
 
         Ok(resp)
     }
 
     pub(crate) fn on_get_available_transitions(
-            &self,
-            _header: rmw_request_id_t,
-            _req: GetAvailableTransitions_Request,
+        &self,
+        _header: rmw_request_id_t,
+        _req: GetAvailableTransitions_Request,
     ) -> Result<GetAvailableTransitions_Response, RclrsError> {
         let state_machine = &*self.state_machine.lock().unwrap();
         // SAFETY: No preconditions for this function.
@@ -384,16 +411,21 @@ impl LifecycleNode {
         let mut available_transitions = Vec::<lifecycle_msgs::msg::TransitionDescription>::new();
         // SAFETY: The state machine has been confirmed to be initialized by this point, so the
         // transition size should not be null
-        let valid_transition_size = unsafe { (*state_machine.current_state).valid_transition_size as isize };
+        let valid_transition_size =
+            unsafe { (*state_machine.current_state).valid_transition_size as isize };
         for i in 0..valid_transition_size {
             // SAFETY: The state machine has been confirmed to be initialized by this point, so the
             // transition pointer should not be null
-            let rcl_transition = unsafe { (*state_machine.current_state).valid_transitions.offset(i) };
+            let rcl_transition =
+                unsafe { (*state_machine.current_state).valid_transitions.offset(i) };
             // SAFETY: The state machine has been confirmed to be initialized by this point, so
             // the transition pointer should not be null
             let transition = unsafe {
                 let transition_id = (*rcl_transition).id as u8;
-                let transition_label = CStr::from_ptr((*rcl_transition).label).to_owned().to_string_lossy().to_string();
+                let transition_label = CStr::from_ptr((*rcl_transition).label)
+                    .to_owned()
+                    .to_string_lossy()
+                    .to_string();
                 lifecycle_msgs::msg::Transition {
                     id: transition_id,
                     label: transition_label,
@@ -403,7 +435,10 @@ impl LifecycleNode {
             // the start state pointer should not be null
             let start_state = unsafe {
                 let start_state_id = (*(*rcl_transition).start).id;
-                let start_state_label = CStr::from_ptr((*(*rcl_transition).start).label).to_owned().to_string_lossy().to_string();
+                let start_state_label = CStr::from_ptr((*(*rcl_transition).start).label)
+                    .to_owned()
+                    .to_string_lossy()
+                    .to_string();
                 lifecycle_msgs::msg::State {
                     id: start_state_id,
                     label: start_state_label,
@@ -413,7 +448,10 @@ impl LifecycleNode {
             // the goal state pointer should not be null
             let goal_state = unsafe {
                 let goal_state_id = (*(*rcl_transition).goal).id;
-                let goal_state_label = CStr::from_ptr((*(*rcl_transition).goal).label).to_owned().to_string_lossy().to_string();
+                let goal_state_label = CStr::from_ptr((*(*rcl_transition).goal).label)
+                    .to_owned()
+                    .to_string_lossy()
+                    .to_string();
                 lifecycle_msgs::msg::State {
                     id: goal_state_id,
                     label: goal_state_label,
@@ -427,7 +465,7 @@ impl LifecycleNode {
             available_transitions.push(trans_desc);
         }
         let resp = lifecycle_msgs::srv::GetAvailableTransitions_Response {
-            available_transitions
+            available_transitions,
         };
         Ok(resp)
     }
@@ -435,7 +473,7 @@ impl LifecycleNode {
     pub(crate) fn on_get_transition_graph(
         &self,
         _header: rmw_request_id_t,
-        _req: GetAvailableTransitions_Request
+        _req: GetAvailableTransitions_Request,
     ) -> Result<GetAvailableTransitions_Response, RclrsError> {
         let state_machine = &*self.state_machine.lock().unwrap();
         // SAFETY: No preconditions for this function.
@@ -444,16 +482,21 @@ impl LifecycleNode {
         let mut available_transitions = Vec::<lifecycle_msgs::msg::TransitionDescription>::new();
         // SAFETY: The state machine has been confirmed to be initialized by this point, so the
         // transition size should not be null
-        let valid_transition_size = unsafe { (*state_machine.current_state).valid_transition_size as isize };
+        let valid_transition_size =
+            unsafe { (*state_machine.current_state).valid_transition_size as isize };
         for i in 0..valid_transition_size {
             // SAFETY: The state machine has been confirmed to be initialized by this point, so the
             // transition pointer should not be null
-            let rcl_transition = unsafe { (*state_machine.current_state).valid_transitions.offset(i) };
+            let rcl_transition =
+                unsafe { (*state_machine.current_state).valid_transitions.offset(i) };
             // SAFETY: The state machine has been confirmed to be initialized by this point, so
             // the transition pointer should not be null
             let transition = unsafe {
                 let transition_id = (*rcl_transition).id as u8;
-                let transition_label = CStr::from_ptr((*rcl_transition).label).to_owned().to_string_lossy().to_string();
+                let transition_label = CStr::from_ptr((*rcl_transition).label)
+                    .to_owned()
+                    .to_string_lossy()
+                    .to_string();
                 lifecycle_msgs::msg::Transition {
                     id: transition_id,
                     label: transition_label,
@@ -463,7 +506,10 @@ impl LifecycleNode {
             // the start state pointer should not be null
             let start_state = unsafe {
                 let start_state_id = (*(*rcl_transition).start).id;
-                let start_state_label = CStr::from_ptr((*(*rcl_transition).start).label).to_owned().to_string_lossy().to_string();
+                let start_state_label = CStr::from_ptr((*(*rcl_transition).start).label)
+                    .to_owned()
+                    .to_string_lossy()
+                    .to_string();
                 lifecycle_msgs::msg::State {
                     id: start_state_id,
                     label: start_state_label,
@@ -473,7 +519,10 @@ impl LifecycleNode {
             // the goal state pointer should not be null
             let goal_state = unsafe {
                 let goal_state_id = (*(*rcl_transition).goal).id;
-                let goal_state_label = CStr::from_ptr((*(*rcl_transition).goal).label).to_owned().to_string_lossy().to_string();
+                let goal_state_label = CStr::from_ptr((*(*rcl_transition).goal).label)
+                    .to_owned()
+                    .to_string_lossy()
+                    .to_string();
                 lifecycle_msgs::msg::State {
                     id: goal_state_id,
                     label: goal_state_label,
@@ -487,7 +536,7 @@ impl LifecycleNode {
             available_transitions.push(trans_desc);
         }
         let resp = lifecycle_msgs::srv::GetAvailableTransitions_Response {
-            available_transitions
+            available_transitions,
         };
         Ok(resp)
     }
@@ -504,7 +553,8 @@ impl LifecycleNode {
 
         // SAFETY: The state machine has been confirmed to be initialized by this point, so the
         // pointer should not be null
-        let current_state = unsafe { State::from_raw(state_machine.current_state as *mut rcl_lifecycle_state_s) };
+        let current_state =
+            unsafe { State::from_raw(state_machine.current_state as *mut rcl_lifecycle_state_s) };
         Ok(current_state)
     }
 
@@ -522,10 +572,11 @@ impl LifecycleNode {
         for i in 0..states_size {
             // SAFETY: The state machine has been confirmed to be initialized by this point, so the
             // pointer should not be null
-            let available_state = unsafe { State::from_raw(state_machine.transition_map.states.offset(i)) };
+            let available_state =
+                unsafe { State::from_raw(state_machine.transition_map.states.offset(i)) };
             states.push(available_state);
         }
-    
+
         Ok(states)
     }
 
@@ -541,16 +592,21 @@ impl LifecycleNode {
 
         // SAFETY: The state machine has been confirmed to be initialized at this point, so the
         // pointer should not be null
-        let transitions_size = unsafe { (*state_machine.current_state).valid_transition_size as isize };
+        let transitions_size =
+            unsafe { (*state_machine.current_state).valid_transition_size as isize };
         for i in 0..transitions_size {
             // SAFETY: The state machine has been confirmed to be initialized at this point, so the
             // pointer should not be null
-            let available_transition = unsafe { transition::Transition::from_raw((*state_machine.current_state).valid_transitions.offset(i)) };
+            let available_transition = unsafe {
+                transition::Transition::from_raw(
+                    (*state_machine.current_state).valid_transitions.offset(i),
+                )
+            };
             transitions.push(available_transition);
         }
 
         Ok(transitions)
-    } 
+    }
 
     pub fn get_transition_graph(&self) -> Result<Vec<transition::Transition>, RclrsError> {
         // Make sure that the state machine is initialized before doing anything
@@ -568,7 +624,9 @@ impl LifecycleNode {
         for i in 0..transitions_size {
             // SAFETY: The state machine has been confirmed to be initialized at this point, so the
             // pointer should not be null
-            let available_transition = unsafe { transition::Transition::from_raw(state_machine.transition_map.transitions.offset(i)) };
+            let available_transition = unsafe {
+                transition::Transition::from_raw(state_machine.transition_map.transitions.offset(i))
+            };
             transitions.push(available_transition);
         }
 
@@ -582,17 +640,25 @@ impl LifecycleNode {
         unsafe {
             rcl_lifecycle_state_machine_is_initialized(&*state_machine).ok()?;
         }
-        
+
         let publish_update = true;
         // Keep the initial state to pass to a transition callback
         let initial_state = state_machine.current_state;
-        // SAFETY: The state machine has been checked to be initialized by this point, and is 
+        // SAFETY: The state machine has been checked to be initialized by this point, and is
         // therefore not null. As for the pointer cast, it's as safe as the rclcpp version. A
         // better method of handling state will probably need to be devised later on, though.
-        let initial_state = unsafe { &State::from_raw(initial_state as *mut rcl_lifecycle_state_s) };
+        let initial_state =
+            unsafe { &State::from_raw(initial_state as *mut rcl_lifecycle_state_s) };
 
         // SAFETY: The state machine has been checked to be initialized by this point
-        unsafe { rcl_lifecycle_trigger_transition_by_id(&mut *state_machine, transition_id, publish_update).ok()? };
+        unsafe {
+            rcl_lifecycle_trigger_transition_by_id(
+                &mut *state_machine,
+                transition_id,
+                publish_update,
+            )
+            .ok()?
+        };
 
         let get_label_for_return_code = |cb_return_code: &Transition| {
             let cb_id = cb_return_code.id;
@@ -606,15 +672,22 @@ impl LifecycleNode {
         };
 
         // SAFETY: The state machine is not null, since it's initialized
-        let cb_return_code = self.execute_callback(unsafe { (*state_machine.current_state).id }, initial_state);
+        let cb_return_code =
+            self.execute_callback(unsafe { (*state_machine.current_state).id }, initial_state);
         let transition_label = get_label_for_return_code(&cb_return_code);
         let transition_label_cstr = CString::new(transition_label).unwrap(); // Should be fine, since the strings are known to be valid CStrings
 
         // Safety: The state machine is not null, since it's initialized
-        unsafe { rcl_lifecycle_trigger_transition_by_label(&mut *state_machine as *mut rcl_lifecycle_state_machine_s, transition_label_cstr.as_ptr(), publish_update).ok()? };
+        unsafe {
+            rcl_lifecycle_trigger_transition_by_label(
+                &mut *state_machine as *mut rcl_lifecycle_state_machine_s,
+                transition_label_cstr.as_ptr(),
+                publish_update,
+            )
+            .ok()?
+        };
 
         Ok(cb_return_code)
-
     }
 
     fn execute_callback(&self, cb_id: u8, previous_state: &State) -> Transition {
@@ -622,30 +695,30 @@ impl LifecycleNode {
             lifecycle_msgs::msg::State::TRANSITION_STATE_ACTIVATING => {
                 let activate = self.on_activate.lock().unwrap();
                 (activate)(previous_state)
-            },
+            }
             lifecycle_msgs::msg::State::TRANSITION_STATE_CONFIGURING => {
                 let configure = self.on_configure.lock().unwrap();
                 (configure)(previous_state)
-            },
+            }
             lifecycle_msgs::msg::State::TRANSITION_STATE_CLEANINGUP => {
                 let cleanup = self.on_cleanup.lock().unwrap();
                 (cleanup)(previous_state)
-            },
+            }
             lifecycle_msgs::msg::State::TRANSITION_STATE_DEACTIVATING => {
                 let deactivate = self.on_deactivate.lock().unwrap();
                 (deactivate)(previous_state)
-            },
+            }
             lifecycle_msgs::msg::State::TRANSITION_STATE_SHUTTINGDOWN => {
                 let shutdown = self.on_shutdown.lock().unwrap();
                 (shutdown)(previous_state)
-            },
+            }
             _ => {
                 let error_handling = self.on_error.lock().unwrap();
                 (error_handling)(previous_state)
             }
         }
     }
- 
+
     fn trigger_transition_by_label(&mut self, transition_label: &str) -> Result<State, RclrsError> {
         let transition = {
             // Make sure that the state machine is initialized before doing anything
@@ -656,8 +729,13 @@ impl LifecycleNode {
             }
 
             let c_transition_label = CString::new(transition_label).unwrap(); // This should be fine as the label originated from C
-            // SAFETY: No preconditions for this function
-            unsafe { rcl_lifecycle_get_transition_by_label(state_machine.current_state, c_transition_label.as_ptr()) }
+                                                                              // SAFETY: No preconditions for this function
+            unsafe {
+                rcl_lifecycle_get_transition_by_label(
+                    state_machine.current_state,
+                    c_transition_label.as_ptr(),
+                )
+            }
         };
 
         if !transition.is_null() {
@@ -674,12 +752,12 @@ impl LifecycleNode {
     }
 
     /// Creates a [`LifecycleNodeBuilder`][1] with the given name.
-    /// 
+    ///
     /// Convenience function equivalent to [`LifecycleNodeBuilder::new()`][2].
-    /// 
+    ///
     /// [1]: crate::LifecycleNodeBuilder
     /// [2]: crate::LifecycleNodeBuilder::new
-    /// 
+    ///
     /// # Example
     /// ```
     /// # use rclrs::{Context, LifecycleNode, RclrsError};
@@ -721,5 +799,4 @@ mod tests {
         assert_send::<LifecycleNode>();
         assert_sync::<LifecycleNode>();
     }
-
 }
