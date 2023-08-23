@@ -48,8 +48,54 @@ use rosidl_runtime_rs::Message;
 // they are running in. Therefore, this type can be safely sent to another thread.
 unsafe impl Send for rcl_lifecycle_state_machine_t {}
 
-type LifecycleCallback = Box<dyn Fn(&State) -> Transition + Send + 'static>;
+type LifecycleCallback = Box<dyn Fn(&State) -> u8 + Send + 'static>;
 
+/// A ROS 2 Lifecycle (managed) Node.
+///
+/// Lifecycle nodes are used when more fine-tuned control over a node is needed. Each node can be
+/// in one of the following primary states at any given point:
+/// - `Unconfigured`: The state the node is in immediately after being instantiated. Also one of two
+///     states the node can be returned to after an error has occurred. In this state, there is
+///     expected to be no stored state.
+/// - `Inactive`: The node is not doing any processing. The node will not recieve any execution time
+///     to read topics, perform processing of data, respond to functional service requests, etc.
+///     Data retention on managed topics will be subject to the configured QoS policy for the
+///     topic. Also, any managed service requests to a node in this state will not be answered
+///     (to the caller, they will fail immediately).
+/// - `Active`: The main state of the node's life cycle. The node will perform any processing,
+///     respond to service requests, reads and processes data, produces output, etc.
+/// - `Finalized`: The state a node ends up in immediately before being destroyed. This state
+///     is always terminal - the only valid transition is to be destroyed. This state exists to
+///     support debugging and introspection, and is one of two states the node can be returned
+///     to after an error has occurred.
+///
+/// Additionally, there are also 6 "transition" states that the node can be in, when it is moving
+/// between primary states:
+/// - `Configuring` (Unconfigured -> Inactive): The node's `on_configure` callback will be called to
+///     allow the node to load its configuration and conduct any required setup. The configuration
+///     of a node will typically involve tasks that must be performed once during a node's
+///     lifetime, such as obtaining permanent memory buffers, and setting up topic publications
+///     and subscriptions that do not change.
+/// - `CleaningUp` (Inactive -> Unconfigured): The node's `on_cleanup` callback will be called to
+///     clear all state and return the node to a functionally equivalent state as when it was first
+///     created. If cleanup cannot be successfully achieved, it will transition to
+///     `ErrorProcessing`.
+/// - `ShuttingDown` (Unconfigured/Inactive/Active -> Finalized): The node's `on_shutdown` callback
+///     will be called to do any cleanup necessary before destruction.
+/// - `Activating` (Inactive -> Active): The node's `on_activate` callback will be called to do any
+///     final preparations to start executing. This may include acquiring resources that are only
+///     held while the node is actually active, such as access to hardware. Ideally, no preparation
+///     that requires significant time (such as lengthy hardwar initialization) should be performed
+///     in this callback.
+/// - `Deactivating` (Active -> Inactive): The node's `on_deactivate` callback will be called to
+///     reverse the changes made by `on_activate`, so as to return the node to a base `Inactive`
+///     state.
+/// - `ErrorProcessing` (Special case: This handles if an error is raised in any other primary or
+///     transition state, and will either put the node into a Finalized or Unconfigured state):
+///     The node's `on_error` callback will be called to attempt to clean up any error conditions
+///     within the node. If the error handling is successfully completed, the node can return to
+///     `Unconfigured`. If a full cleanup is not possible, it must fail and transition the node to
+///     the `Finalized` state for destruction.
 pub struct LifecycleNode {
     pub(crate) rcl_node_mtx: Arc<Mutex<rcl_node_t>>,
     pub(crate) rcl_context_mtx: Arc<Mutex<rcl_context_t>>,
@@ -326,7 +372,13 @@ unsafe fn call_string_getter_with_handle(
 
 #[cfg(test)]
 mod tests {
-    use crate::{Context, Node, vendor::lifecycle_msgs::srv::{GetAvailableStates, GetAvailableTransitions, GetState, ChangeState}, create_node, spin};
+    use crate::{
+        create_node, spin,
+        vendor::lifecycle_msgs::srv::{
+            ChangeState, GetAvailableStates, GetAvailableTransitions, GetState,
+        },
+        Context, Node,
+    };
 
     use super::*;
 
@@ -339,102 +391,6 @@ mod tests {
     // const NODE_GET_AVAILABLE_STATES_TOPIC: &str = "/lc_talker/get_available_states";
     // const NODE_GET_AVAILABLE_TRANSITIONS_TOPIC: &str = "/lc_talker/get_available_transitions";
     // const NODE_GET_TRANSITION_GRAPH_TOPIC: &str = "/lc_talker/get_transition_graph";
-
-    // struct LifecycleServiceClient {
-    //     node: Node,
-    //     client_get_available_states: Arc<Client<GetAvailableStates>>,
-    //     client_get_available_transitions: Arc<Client<GetAvailableTransitions>>,
-    //     client_get_transition_graph: Arc<Client<GetAvailableTransitions>>,
-    //     client_get_state: Arc<Client<GetState>>,
-    //     client_change_state: Arc<Client<ChangeState>>,
-    // }
-
-    // impl LifecycleServiceClient {
-    //     #[allow(clippy::new_ret_no_self)]
-    //     fn new(mut node: Node) -> Result<LifecycleServiceClient, RclrsError> {
-    //         let client_get_available_states = node.create_client::<lifecycle_msgs::srv::GetAvailableStates>(NODE_GET_AVAILABLE_STATES_TOPIC)?;
-    //         let client_get_available_transitions = node.create_client::<lifecycle_msgs::srv::GetAvailableTransitions>(NODE_GET_AVAILABLE_TRANSITIONS_TOPIC)?;
-    //         let client_get_transition_graph = node.create_client::<lifecycle_msgs::srv::GetAvailableTransitions>(NODE_GET_AVAILABLE_TRANSITIONS_TOPIC)?;
-    //         let client_get_state = node.create_client::<lifecycle_msgs::srv::GetState>(NODE_GET_STATE_TOPIC)?;
-    //         let client_change_state = node.create_client::<lifecycle_msgs::srv::ChangeState>(NODE_CHANGE_STATE_TOPIC)?;
-    //         let lifecycle_service_client = LifecycleServiceClient {
-    //             node,
-    //             client_get_available_states,
-    //             client_get_available_transitions,
-    //             client_get_transition_graph,
-    //             client_get_state,
-    //             client_change_state
-    //         };
-    //         Ok(lifecycle_service_client)
-    //     }
-
-    //     async fn get_state(&self) -> lifecycle_msgs::msg::State {
-    //         let get_state_request = lifecycle_msgs::srv::GetState_Request::default();
-    //         let res = self.client_get_state.call_async(get_state_request).await;
-    //         match res {
-    //             Ok(x) => x.current_state,
-    //             Err(e) => {
-    //                 lifecycle_msgs::msg::State{
-    //                     id: lifecycle_msgs::msg::State::PRIMARY_STATE_UNKNOWN,
-    //                     label: format!("Error retrieving request: {e}")
-    //                 }
-    //             }
-    //         }
-    //     }
-
-    //     async fn change_state(&self, transition: lifecycle_msgs::msg::Transition) -> bool {
-    //         let mut change_state_request = lifecycle_msgs::srv::ChangeState_Request::default();
-    //         change_state_request.transition.id = transition.id;
-    //         let res = self.client_change_state.call_async(change_state_request).await;
-    //         match res {
-    //             Ok(x) => x.success,
-    //             Err(_) => false,
-    //         }
-    //     }
-
-    //     async fn get_available_states(&self) -> Vec<lifecycle_msgs::msg::State> {
-    //         let get_available_states_request = lifecycle_msgs::srv::GetAvailableStates_Request::default();
-    //         let res = self.client_get_available_states.call_async(get_available_states_request).await;
-    //         match res {
-    //             Ok(x) => x.available_states,
-    //             Err(_) => {
-    //                 let x: Vec<lifecycle_msgs::msg::State> = Vec::new();
-    //                 x
-    //             }
-    //         }
-    //     }
-
-    //     async fn get_available_transitions(&self) -> Vec<lifecycle_msgs::msg::TransitionDescription> {
-    //         let get_available_transitions_request = lifecycle_msgs::srv::GetAvailableTransitions_Request::default();
-    //         let res = self.client_get_available_transitions.call_async(get_available_transitions_request).await;
-    //         match res {
-    //             Ok(x) => x.available_transitions,
-    //             Err(_) => {
-    //                 let x: Vec<lifecycle_msgs::msg::TransitionDescription> = Vec::new();
-    //                 x
-    //             }
-    //         }
-    //     }
-
-    //     // Internally identical to `get_available_transitions`, as this was how it was written in `rclcpp`
-    //     async fn get_transition_graph(&self) -> Vec<lifecycle_msgs::msg::TransitionDescription> {
-    //         let get_available_transitions_request = lifecycle_msgs::srv::GetAvailableTransitions_Request::default();
-    //         let res = self.client_get_available_transitions.call_async(get_available_transitions_request).await;
-    //         match res {
-    //             Ok(x) => x.available_transitions,
-    //             Err(_) => {
-    //                 let x: Vec<lifecycle_msgs::msg::TransitionDescription> = Vec::new();
-    //                 x
-    //             }
-    //         }
-    //     }
-    // }
-
-    // fn set_up_test_client(context: &Context) -> Result<LifecycleServiceClient, RclrsError> {
-    //     let test_client_node = create_node(&context, "lifecycle_test_client")?;
-    //     let lifecycle_test = LifecycleServiceClient::new(test_client_node)?;
-    //     Ok(lifecycle_test)
-    // }
 
     #[test]
     fn lifecycle_node_is_send_and_sync() {
@@ -458,4 +414,45 @@ mod tests {
     //     Ok(())
 
     // }
+
+    // TODO(jhassold): Create tests to see if lifecycle node responds appropriately to messages for each type of state.
+
+    #[test]
+    fn test_trigger_transition() {
+        let context = Context::new(vec![]).unwrap();
+        let mut test_node_builder = LifecycleNode::builder(&context, "test_node");
+
+        // `Activating` transition callback
+        let on_activate_cb = |_: &State| Transition::TRANSITION_CALLBACK_SUCCESS;
+        let on_activate: LifecycleCallback = Box::new(on_activate_cb);
+
+        // `Cleanup` transition callback
+        let on_cleanup_cb = |_: &State| Transition::TRANSITION_CALLBACK_SUCCESS;
+        let on_cleanup: LifecycleCallback = Box::new(on_cleanup_cb);
+
+        // `Configuring` transition callback
+        let on_configure_cb = |_: &State| Transition::TRANSITION_CALLBACK_SUCCESS;
+        let on_configure: LifecycleCallback = Box::new(on_configure_cb);
+
+        // `Deactivate` transition callback
+        let on_deactivate_cb = |_: &State| Transition::TRANSITION_CALLBACK_SUCCESS;
+        let on_deactivate: LifecycleCallback = Box::new(on_deactivate_cb);
+
+        // Error handling callback
+        let on_error_cb = |_: &State| Transition::TRANSITION_CALLBACK_SUCCESS;
+        let on_error: LifecycleCallback = Box::new(on_error_cb);
+
+        // `Shutdown` transition callback
+        let on_shutdown_cb = |_: &State| Transition::TRANSITION_CALLBACK_SUCCESS;
+        let on_shutdown: LifecycleCallback = Box::new(on_shutdown_cb);
+
+        test_node_builder.on_activate = Some(on_activate);
+        test_node_builder.on_cleanup = Some(on_cleanup);
+        test_node_builder.on_configure = Some(on_configure);
+        test_node_builder.on_deactivate = Some(on_deactivate);
+        test_node_builder.on_error = Some(on_error);
+        test_node_builder.on_shutdown = Some(on_shutdown);
+
+        test_node_builder.enable_communication_interface = true;
+    }
 }

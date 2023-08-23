@@ -20,12 +20,16 @@ use std::sync::{Arc, Mutex};
 use rosidl_runtime_rs::{RmwMessage, Service};
 
 use crate::lifecycle_node::{call_string_getter_with_handle, LifecycleNode};
-use crate::vendor::lifecycle_msgs::srv::{ChangeState, ChangeState_Request, ChangeState_Response, GetState, GetState_Response, GetAvailableStates, GetAvailableStates_Response, GetAvailableTransitions, GetAvailableTransitions_Response};
+use crate::vendor::lifecycle_msgs::srv::{
+    ChangeState, ChangeState_Request, ChangeState_Response, GetAvailableStates,
+    GetAvailableStates_Response, GetAvailableTransitions, GetAvailableTransitions_Response,
+    GetState, GetState_Response,
+};
 use crate::vendor::{lifecycle_msgs, rcl_interfaces};
 use crate::{rcl_bindings::*, resolve_parameter_overrides, Context, RclrsError, ToResult};
 
-use super::LifecycleCallback;
 use super::state_machine::LifecycleMachine;
+use super::LifecycleCallback;
 
 /// A builder for creating a [`LifecycleNode`][1].
 ///
@@ -42,13 +46,13 @@ pub struct LifecycleNodeBuilder {
     use_global_arguments: bool,
     arguments: Vec<String>,
     enable_rosout: bool,
-    on_activate: Option<LifecycleCallback>,
-    on_cleanup: Option<LifecycleCallback>,
-    on_configure: Option<LifecycleCallback>,
-    on_deactivate: Option<LifecycleCallback>,
-    on_error: Option<LifecycleCallback>,
-    on_shutdown: Option<LifecycleCallback>,
-    enable_communication_interface: bool,
+    pub(crate) on_activate: Option<LifecycleCallback>,
+    pub(crate) on_cleanup: Option<LifecycleCallback>,
+    pub(crate) on_configure: Option<LifecycleCallback>,
+    pub(crate) on_deactivate: Option<LifecycleCallback>,
+    pub(crate) on_error: Option<LifecycleCallback>,
+    pub(crate) on_shutdown: Option<LifecycleCallback>,
+    pub enable_communication_interface: bool,
 }
 
 impl LifecycleNodeBuilder {
@@ -212,13 +216,14 @@ impl LifecycleNodeBuilder {
             .ok_or("The \"on_shutdown\" transition is required for building.")?;
 
         // SAFETY: Getting a zero-initialized state machine is always safe
-        let state_machine = Mutex::new(unsafe {
-            rcl_lifecycle_get_zero_initialized_state_machine()
-        });
+        let state_machine =
+            Mutex::new(unsafe { rcl_lifecycle_get_zero_initialized_state_machine() });
+
         // SAFETY: Getting the default state machine options is always safe
         let mut state_machine_options =
             unsafe { rcl_lifecycle_get_default_state_machine_options() };
         state_machine_options.enable_com_interface = self.enable_communication_interface;
+
         // SAFETY: Getting the default allocator is always safe
         // TODO(jhdcs): If we ever allow the use of a non-default allocator, this will need to change
         state_machine_options.allocator = unsafe { rcutils_get_default_allocator() };
@@ -265,40 +270,49 @@ impl LifecycleNodeBuilder {
             // Change State
             {
                 let state_machine_ptr = state_machine.clone();
-                lifecycle_node.create_service::<ChangeState, _>("change_state", move |header, req| -> ChangeState_Response {
-                    state_machine_ptr.on_change_state(header, &req)
-                })?;
+                lifecycle_node.create_service::<ChangeState, _>(
+                    "change_state",
+                    move |header, req| -> ChangeState_Response {
+                        state_machine_ptr.on_change_state(header, &req)
+                    },
+                )?;
             }
 
             // Get State
             {
                 let state_machine_ptr = state_machine.clone();
-                lifecycle_node.create_service::<GetState, _>("get_state", move |header, req| -> GetState_Response {
-                    state_machine_ptr.on_get_state(header, &req)
-                })?;
+                lifecycle_node.create_service::<GetState, _>(
+                    "get_state",
+                    move |header, req| -> GetState_Response {
+                        state_machine_ptr.on_get_state(header, &req)
+                    },
+                )?;
             }
 
             // Get Available States
             {
                 let state_machine_ptr = state_machine.clone();
-                lifecycle_node.create_service::<GetAvailableStates, _>("get_available_states", move |header, req| {
-                    state_machine_ptr.on_get_available_states(header, &req)
-                })?;
+                lifecycle_node.create_service::<GetAvailableStates, _>(
+                    "get_available_states",
+                    move |header, req| state_machine_ptr.on_get_available_states(header, &req),
+                )?;
             }
 
             // Get Avaliable Transitions
             {
                 let state_machine_ptr = state_machine.clone();
-                lifecycle_node.create_service::<GetAvailableTransitions, _>("get_available_transitions", move |header, req| {
-                    state_machine_ptr.on_get_available_transitions(header, &req)
-                })?;
+                lifecycle_node.create_service::<GetAvailableTransitions, _>(
+                    "get_available_transitions",
+                    move |header, req| state_machine_ptr.on_get_available_transitions(header, &req),
+                )?;
             }
 
             // Get Transition Graph
             {
-                lifecycle_node.create_service::<GetAvailableTransitions, _>("get_transition_graph", move |header, req| {
-                    state_machine.on_get_transition_graph(header, &req)
-                })?;
+                lifecycle_node.create_service::<GetAvailableTransitions, _>(
+                    "get_transition_graph",
+                    move |header, req| state_machine.on_get_transition_graph(header, &req),
+                )?;
             }
         }
 

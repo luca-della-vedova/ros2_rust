@@ -13,11 +13,27 @@
 // DISTRIBUTION A. Approved for public release; distribution unlimited.
 // OPSEC #4584.
 
-use std::{sync::Mutex, ffi::{CString, CStr}, thread::current};
+use std::{
+    ffi::{CStr, CString},
+    sync::Mutex,
+    thread::current,
+};
 
-use crate::{rcl_bindings::*, vendor::lifecycle_msgs::{srv::{ChangeState_Request, ChangeState_Response, GetState_Request, GetState_Response, GetAvailableStates_Request, GetAvailableStates_Response, GetAvailableTransitions_Request, GetAvailableTransitions_Response}, self, msg::Transition}, ToResult, RclrsError};
+use crate::{
+    rcl_bindings::*,
+    vendor::lifecycle_msgs::{
+        self,
+        msg::Transition,
+        srv::{
+            ChangeState_Request, ChangeState_Response, GetAvailableStates_Request,
+            GetAvailableStates_Response, GetAvailableTransitions_Request,
+            GetAvailableTransitions_Response, GetState_Request, GetState_Response,
+        },
+    },
+    RclrsError, ToResult,
+};
 
-use super::{LifecycleCallback, state::State, transition};
+use super::{state::State, transition, LifecycleCallback};
 
 pub(crate) struct LifecycleMachine {
     pub state_machine: Mutex<rcl_lifecycle_state_machine_t>,
@@ -41,8 +57,8 @@ impl LifecycleMachine {
             // SAFETY: No preconditions for this function
             unsafe {
                 rcl_lifecycle_state_machine_is_initialized(state_machine)
-                .ok()
-                .unwrap()
+                    .ok()
+                    .unwrap()
             };
             let mut transition_id = req.transition.id;
 
@@ -67,7 +83,7 @@ impl LifecycleMachine {
                     return resp;
                 }
                 // SAFETY: We already checked to make sure this wasn't null
-                transition_id = unsafe { (*rcl_transition).id as u8};
+                transition_id = unsafe { (*rcl_transition).id as u8 };
             }
             transition_id
         };
@@ -85,7 +101,11 @@ impl LifecycleMachine {
     ) -> GetState_Response {
         let state_machine = &*self.state_machine.lock().unwrap();
         // SAFETY: No preconditions for this function.
-        unsafe { rcl_lifecycle_state_machine_is_initialized(state_machine).ok().unwrap() };
+        unsafe {
+            rcl_lifecycle_state_machine_is_initialized(state_machine)
+                .ok()
+                .unwrap()
+        };
 
         // SAFETY: The state machine has been confirmed to be initialized by this point, so the
         // label pointer should not be null
@@ -110,7 +130,11 @@ impl LifecycleMachine {
     ) -> GetAvailableStates_Response {
         let state_machine = &*self.state_machine.lock().unwrap();
         // SAFETY: No preconditions for this function.
-        unsafe { rcl_lifecycle_state_machine_is_initialized(state_machine).ok().unwrap() };
+        unsafe {
+            rcl_lifecycle_state_machine_is_initialized(state_machine)
+                .ok()
+                .unwrap()
+        };
 
         let mut available_states = Vec::<lifecycle_msgs::msg::State>::new();
         for i in 0..state_machine.transition_map.states_size as isize {
@@ -130,7 +154,6 @@ impl LifecycleMachine {
         }
 
         GetAvailableStates_Response { available_states }
-
     }
 
     pub(crate) fn on_get_available_transitions(
@@ -140,7 +163,11 @@ impl LifecycleMachine {
     ) -> GetAvailableTransitions_Response {
         let state_machine = &*self.state_machine.lock().unwrap();
         // SAFETY: No preconditions for this function.
-        unsafe { rcl_lifecycle_state_machine_is_initialized(state_machine).ok().unwrap() };
+        unsafe {
+            rcl_lifecycle_state_machine_is_initialized(state_machine)
+                .ok()
+                .unwrap()
+        };
 
         let mut available_transitions = Vec::<lifecycle_msgs::msg::TransitionDescription>::new();
         // SAFETY: The state machine has been confirmed to be initialized by this point, so the
@@ -210,17 +237,19 @@ impl LifecycleMachine {
     ) -> GetAvailableTransitions_Response {
         let state_machine = &*self.state_machine.lock().unwrap();
         // SAFETY: No preconditions for this function.
-        unsafe { rcl_lifecycle_state_machine_is_initialized(state_machine).ok().unwrap() };
+        unsafe {
+            rcl_lifecycle_state_machine_is_initialized(state_machine)
+                .ok()
+                .unwrap()
+        };
 
         let mut available_transitions = Vec::<lifecycle_msgs::msg::TransitionDescription>::new();
-        
-        let valid_transition_size =
-             state_machine.transition_map.transitions_size as isize;
+
+        let valid_transition_size = state_machine.transition_map.transitions_size as isize;
         for i in 0..valid_transition_size {
             // SAFETY: The state machine has been confirmed to be initialized by this point, so the
             // transition pointer should not be null
-            let rcl_transition =
-                unsafe { (state_machine.transition_map).transitions.offset(i) };
+            let rcl_transition = unsafe { (state_machine.transition_map).transitions.offset(i) };
             // SAFETY: The state machine has been confirmed to be initialized by this point, so
             // the transition pointer should not be null
             let transition = unsafe {
@@ -309,7 +338,9 @@ impl LifecycleMachine {
         Ok(states)
     }
 
-    pub(crate) fn get_available_transitions(&self) -> Result<Vec<transition::Transition>, RclrsError> {
+    pub(crate) fn get_available_transitions(
+        &self,
+    ) -> Result<Vec<transition::Transition>, RclrsError> {
         // Make sure that the state machine is initialized before doing anything
         let state_machine = self.state_machine.lock().unwrap();
         // SAFETY: No preconditions for this function
@@ -361,14 +392,14 @@ impl LifecycleMachine {
         Ok(transitions)
     }
 
-    pub(crate) fn change_state(&self, transition_id: u8) -> Result<Transition, RclrsError> {
+    pub(crate) fn change_state(&self, transition_id: u8) -> Result<u8, RclrsError> {
         // Make sure that the state machine is initialized before doing anything
         let mut state_machine = self.state_machine.lock().unwrap();
         // SAFETY: No preconditions for this function
         unsafe {
             rcl_lifecycle_state_machine_is_initialized(&*state_machine).ok()?;
         }
-        
+
         let publish_update = true;
         // Keep the initial state to pass to a transition callback
         let initial_state = state_machine.current_state;
@@ -383,16 +414,15 @@ impl LifecycleMachine {
             rcl_lifecycle_trigger_transition_by_id(
                 &mut *state_machine,
                 transition_id,
-                publish_update
+                publish_update,
             )
             .ok()?
         };
 
-        let get_label_for_return_code = |cb_return_code: &Transition| {
-            let cb_id = cb_return_code.id;
-            if cb_id == Transition::TRANSITION_CALLBACK_SUCCESS {
+        let get_label_for_return_code = |cb_return_code: &u8| {
+            if cb_return_code == &Transition::TRANSITION_CALLBACK_SUCCESS {
                 "transition_success"
-            } else if cb_id == Transition::TRANSITION_CALLBACK_FAILURE {
+            } else if cb_return_code == &Transition::TRANSITION_CALLBACK_FAILURE {
                 "transition_failure"
             } else {
                 "transition_error"
@@ -410,7 +440,7 @@ impl LifecycleMachine {
             rcl_lifecycle_trigger_transition_by_label(
                 &mut *state_machine as *mut rcl_lifecycle_state_machine_s,
                 transition_label_cstr.as_ptr(),
-                publish_update
+                publish_update,
             )
             .ok()?
         };
@@ -418,32 +448,35 @@ impl LifecycleMachine {
         Ok(cb_return_code)
     }
 
-    fn execute_callback(&self, cb_id: u8, previous_state: &State) -> Transition {
-        match cb_id {
+    fn execute_callback(&self, cb_id: u8, previous_state: &State) -> u8 {
+        let callback_fn = match cb_id {
             lifecycle_msgs::msg::State::TRANSITION_STATE_ACTIVATING => {
-                let activate = self.on_activate.lock().unwrap();
-                (activate)(previous_state)
+                self.on_activate.lock().unwrap()
             }
             lifecycle_msgs::msg::State::TRANSITION_STATE_CLEANINGUP => {
-                let cleanup = self.on_cleanup.lock().unwrap();
-                (cleanup)(previous_state)
+                self.on_cleanup.lock().unwrap()
             }
             lifecycle_msgs::msg::State::TRANSITION_STATE_CONFIGURING => {
-                let configure = self.on_configure.lock().unwrap();
-                (configure)(previous_state)
+                self.on_configure.lock().unwrap()
             }
             lifecycle_msgs::msg::State::TRANSITION_STATE_DEACTIVATING => {
-                let deactivate = self.on_deactivate.lock().unwrap();
-                (deactivate)(previous_state)
+                self.on_deactivate.lock().unwrap()
             }
             lifecycle_msgs::msg::State::TRANSITION_STATE_SHUTTINGDOWN => {
-                let shutdown = self.on_shutdown.lock().unwrap();
-                (shutdown)(previous_state)
+                self.on_shutdown.lock().unwrap()
             }
             _ => {
-                let error_handling = self.on_error.lock().unwrap();
-                (error_handling)(previous_state)
+                self.on_error.lock().unwrap()
             }
+        };
+
+        // According to the spec for lifecycle nodes, exceptions should be counted as an error.
+        // In Rust, this means that we should catch any panics that occur and turn them into
+        // errors for the node to sort out as normal.
+        let res = std::panic::catch_unwind(|| (callback_fn)(previous_state));
+        match res {
+            Ok(r) => r,
+            Err(_) => Transition::TRANSITION_CALLBACK_ERROR,
         }
     }
 
@@ -456,7 +489,7 @@ impl LifecycleMachine {
                 rcl_lifecycle_state_machine_is_initialized(&*state_machine).ok()?;
             }
 
-            let c_transition_label = CString::new(transition_label).unwrap();   // This should be fine as the label originated from C/C++
+            let c_transition_label = CString::new(transition_label).unwrap(); // This should be fine as the label originated from C/C++
 
             // SAFETY: No preconditions for this function
             unsafe {
@@ -469,7 +502,7 @@ impl LifecycleMachine {
 
         if !transition.is_null() {
             // SAFETY: We have just confirmed this is not null
-            let transition_id = unsafe { (*transition).id as u8};
+            let transition_id = unsafe { (*transition).id as u8 };
             self.change_state(transition_id)?;
         }
         self.get_current_state()
