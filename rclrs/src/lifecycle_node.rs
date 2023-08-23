@@ -20,11 +20,10 @@ mod state;
 mod transition;
 
 use std::{os::raw::c_char, ffi::{CStr, CString}, sync::{Arc, Mutex, Weak}, fmt, error::Error};
-use crate::{rcl_bindings::*, ClientBase, GuardCondition, ServiceBase, SubscriptionBase, ParameterOverrideMap, Context, RclrsError, Client, QoSProfile, Publisher,  Subscription, SubscriptionCallback, vendor::lifecycle_msgs::{self, srv::{ChangeState_Request, ChangeState_Response, GetState_Request, GetState_Response, GetAvailableStates_Request, GetAvailableStates_Response, GetAvailableTransitions_Request, GetAvailableTransitions_Response}}, ToResult};
+use crate::{rcl_bindings::*, ClientBase, GuardCondition, ServiceBase, SubscriptionBase, ParameterOverrideMap, Context, RclrsError, Client, QoSProfile, Publisher,  Subscription, SubscriptionCallback, vendor::lifecycle_msgs::{self, srv::{ChangeState_Request, GetState_Request, GetState_Response, GetAvailableStates_Request, GetAvailableStates_Response, GetAvailableTransitions_Request, GetAvailableTransitions_Response, ChangeState_Response}}, ToResult};
 use self::{lifecycle_builder::LifecycleNodeBuilder, state::State};
 
-use rosidl_runtime_rs::{Message, RmwMessage, Service};
-use lifecycle_msgs::srv::ChangeState;
+use rosidl_runtime_rs::Message;
 use lifecycle_msgs::msg::Transition;
 
 // The functions accessing this type, including drop(), shouldn't care about the thread
@@ -32,6 +31,46 @@ use lifecycle_msgs::msg::Transition;
 unsafe impl Send for rcl_lifecycle_state_machine_t {}
 
 type LifecycleCallback = Box<dyn Fn(&State) -> Transition + Send + 'static>;
+
+pub(crate) fn on_change_state(
+    node: &LifecycleNode,
+    _header: &rmw_request_id_t,
+    req: &ChangeState_Request,
+) -> ChangeState_Response {
+    let mut resp = ChangeState_Response::default();
+    let transition_id = {            
+        let state_machine = &*node.state_machine.lock().unwrap();
+        // SAFETY: No preconditions for this function.
+        unsafe { rcl_lifecycle_state_machine_is_initialized(state_machine).ok().unwrap() };
+        let mut transition_id = req.transition.id;
+        
+        // If there's a label attached to the request, we check the transition attached to this label.
+        // We can't compare the id of the looked up transition any further because ROS 2 service call
+        // sets all integers to zero by default. That means if we call ROS 2 service call:
+        // ... {transition: {label: shutdown}}
+        // the id of the request is 0 (zero) whereas the id from the looked up transition can be different.
+        // The result of this is that the label takes precedence over the ID.
+        if !req.transition.label.is_empty() {
+            // This should be safe to unwrap, since the label originated in C/C++
+            let label_cstr = CString::new(req.transition.label.clone()).unwrap();
+            // SAFETY: No preconditions for this function - however it may return null
+            let rcl_transition = unsafe {
+                rcl_lifecycle_get_transition_by_label(state_machine.current_state, label_cstr.as_ptr())
+            };
+            if rcl_transition.is_null() {
+                resp.success = false;
+                return resp;
+            }
+            transition_id = unsafe { (*rcl_transition).id as u8 };
+        }
+        transition_id
+    };
+
+    let ret = node.change_state(transition_id).unwrap();
+    resp.success = ret.id == lifecycle_msgs::msg::Transition::TRANSITION_CALLBACK_SUCCESS;
+
+    resp
+}
 
 pub struct LifecycleNode {
     pub(crate) rcl_node_mtx: Arc<Mutex<rcl_node_t>>,
@@ -274,47 +313,6 @@ impl LifecycleNode {
         domain_id
     }
 
-    pub(crate) fn on_change_state(
-        &mut self,
-        _header: &rmw_request_id_t,
-        req: &ChangeState_Request,
-        resp: &mut Arc<Mutex<ChangeState_Response>>
-    ) -> Result<(), RclrsError> {
-        let transition_id = {            
-            let state_machine = &*self.state_machine.lock().unwrap();
-            // SAFETY: No preconditions for this function.
-            unsafe { rcl_lifecycle_state_machine_is_initialized(state_machine).ok()? };
-            let mut transition_id = req.transition.id;
-            
-            // If there's a label attached to the request, we check the transition attached to this label.
-            // We can't compare the id of the looked up transition any further because ROS 2 service call
-            // sets all integers to zero by default. That means if we call ROS 2 service call:
-            // ... {transition: {label: shutdown}}
-            // the id of the request is 0 (zero) whereas the id from the looked up transition can be different.
-            // The result of this is that the label takes precedence over the ID.
-            if !req.transition.label.is_empty() {
-                // This should be safe to unwrap, since the label originated in C/C++
-                let label_cstr = CString::new(req.transition.label.clone()).unwrap();
-                // SAFETY: No preconditions for this function - however it may return null
-                let rcl_transition = unsafe {
-                    rcl_lifecycle_get_transition_by_label(state_machine.current_state, label_cstr.as_ptr())
-                };
-                if rcl_transition.is_null() {
-                    let mut response = resp.lock().unwrap();
-                    response.success = false;
-                    return Ok(());
-                }
-                transition_id = unsafe { (*rcl_transition).id as u8 };
-            }
-            transition_id
-        };
-
-        let ret = self.change_state(transition_id)?;
-        let mut response = resp.lock().unwrap();
-        response.success = ret.id == lifecycle_msgs::msg::Transition::TRANSITION_CALLBACK_SUCCESS;
-
-        Ok(())
-    }
 
     pub(crate) fn on_get_state(
         &self,
@@ -341,7 +339,6 @@ impl LifecycleNode {
         };
 
         Ok(resp)
-
     }
 
     pub(crate) fn on_get_available_states(
@@ -578,7 +575,7 @@ impl LifecycleNode {
         Ok(transitions)
     }
 
-    pub fn change_state(&mut self, transition_id: u8) -> Result<Transition, RclrsError> {
+    pub fn change_state(&self, transition_id: u8) -> Result<Transition, RclrsError> {
         // Make sure that the state machine is initialized before doing anything
         let mut state_machine = self.state_machine.lock().unwrap();
         // SAFETY: No preconditions for this function
@@ -647,6 +644,33 @@ impl LifecycleNode {
                 (error_handling)(previous_state)
             }
         }
+    }
+ 
+    fn trigger_transition_by_label(&mut self, transition_label: &str) -> Result<State, RclrsError> {
+        let transition = {
+            // Make sure that the state machine is initialized before doing anything
+            let state_machine = self.state_machine.lock().unwrap();
+            // SAFETY: No preconditions for this function
+            unsafe {
+                rcl_lifecycle_state_machine_is_initialized(&*state_machine).ok()?;
+            }
+
+            let c_transition_label = CString::new(transition_label).unwrap(); // This should be fine as the label originated from C
+            // SAFETY: No preconditions for this function
+            unsafe { rcl_lifecycle_get_transition_by_label(state_machine.current_state, c_transition_label.as_ptr()) }
+        };
+
+        if !transition.is_null() {
+            // SAFETY: We have just confirmed this is not null
+            let transition_id = unsafe { (*transition).id as u8 };
+            self.change_state(transition_id)?;
+        }
+        self.get_current_state()
+    }
+
+    fn trigger_transition_by_id(&mut self, transition_id: u8) -> Result<State, RclrsError> {
+        self.change_state(transition_id)?;
+        self.get_current_state()
     }
 
     /// Creates a [`LifecycleNodeBuilder`][1] with the given name.
