@@ -13,7 +13,7 @@
 // DISTRIBUTION A. Approved for public release; distribution unlimited.
 // OPSEC #4584.
 
-use std::{ffi::{CString, c_void}, mem::size_of, sync::{Arc, Mutex}};
+use std::{ffi::{CString, c_void, CStr}, mem::size_of, sync::{Arc, Mutex}};
 
 use crate::{rcl_bindings::*, RclrsError, RclReturnCode, error::ToResult};
 
@@ -57,6 +57,22 @@ impl State {
             // SAFETY: state_handle has already been allocated by this point, and has checked to be non-null
             rcl_lifecycle_state_init(state_handle, id, state_label.as_c_str().as_ptr(), &allocator).ok()?;
             Ok(State { id, label: state_label, allocator, state_handle: Arc::new(Mutex::new(state_handle)) })
+        }
+    }
+
+    // Creates a new [`State`] object from a raw pointer to an [`rcl_lifecycle_state_t`] object.
+    // SAFETY: `rcl_lifecycle_state_handle` must not be null
+    pub unsafe fn from_raw(rcl_lifecycle_state_handle: *mut rcl_lifecycle_state_t) -> Self {
+        // SAFETY: Getting the default allocator for RCL should be safe
+        let allocator = rcutils_get_default_allocator();
+        // SAFETY: rcl_lifecycle_state_handle must not be null - see safety comment for the function
+        let label = CStr::from_ptr((*rcl_lifecycle_state_handle).label).to_owned();
+        Self {
+            // SAFETY: rcl_lifecycle_state_handle must not be null - see safety comment for the function
+            id: (*rcl_lifecycle_state_handle).id,
+            label,
+            allocator,
+            state_handle: Arc::new(Mutex::new(rcl_lifecycle_state_handle)),
         }
     }
 

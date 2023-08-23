@@ -18,7 +18,7 @@ mod lifecycle_graph;
 mod state_machine;
 mod state;
 
-use std::{os::raw::c_char, ffi::CStr, sync::{Arc, Mutex, Weak}, fmt, error::Error};
+use std::{os::raw::c_char, ffi::{CStr, CString}, sync::{Arc, Mutex, Weak}, fmt, error::Error};
 use crate::{rcl_bindings::*, ClientBase, GuardCondition, ServiceBase, SubscriptionBase, ParameterOverrideMap, Context, RclrsError, Client, QoSProfile, Publisher,  Subscription, SubscriptionCallback, vendor::lifecycle_msgs::{self, srv::{ChangeState_Request, ChangeState_Response}}, ToResult};
 use self::{lifecycle_builder::LifecycleNodeBuilder, state::State};
 
@@ -26,44 +26,9 @@ use rosidl_runtime_rs::{Message, RmwMessage, Service};
 use lifecycle_msgs::srv::ChangeState;
 use lifecycle_msgs::msg::Transition;
 
-// pub enum LifecycleCallbackReturn {
-//     // The transition callback successfully performed its required functionality.
-//     Success,
-//     // The transition callback failed to perform its required functionality.
-//     Failure,
-//     // The transition callback encountered an error that requires special cleanup, if possible.
-//     Error,
-// }
-
-// impl TryFrom<lifecycle_msgs__msg__Transition> for LifecycleCallbackReturn {
-//     type Error = &'static str;
-//     fn try_from(value: lifecycle_msgs__msg__Transition) -> Result<Self, <Self as TryFrom<lifecycle_msgs__msg__Transition>>::Error> {
-//         match value.id {
-//             97 => Ok(Self::Success),
-//             98 => Ok(Self::Failure),
-//             99 => Ok(Self::Error),
-//             _ => Err("Invalid callback return ID: \"{}\"!")
-//         }
-//     }
-// }
-
-// impl LifecycleCallbackReturn {
-//     pub fn id(&self) -> u8 {
-//         match self {
-//             Self::Success => 97,
-//             Self::Failure => 98,
-//             Self::Error => 99
-//         }
-//     }
-
-//     pub fn label(&self) -> String {
-//         match self {
-//             Self::Success => "TRANSITION_CALLBACK_SUCCESS",
-//             Self::Failure => "TRANSITION_CALLBACK_FAILURE",
-//             Self::Error => "TRANSITION_CALLBACK_ERROR",
-//         }.into()
-//     }
-// }
+// The functions accessing this type, including drop(), shouldn't care about the thread
+// they are running in. Therefore, this type can be safely sent to another thread.
+unsafe impl Send for rcl_lifecycle_state_machine_t {}
 
 type LifecycleCallback = Box<dyn Fn(&State) -> Transition + Send + 'static>;
 
@@ -82,6 +47,15 @@ pub struct LifecycleNode {
     pub(crate) on_shutdown: Mutex<LifecycleCallback>,
     state_machine: Arc<Mutex<rcl_lifecycle_state_machine_t>>,
     _parameter_map: ParameterOverrideMap,
+}
+
+impl Drop for LifecycleNode {
+    fn drop(&mut self) {
+        let mut node = self.rcl_node_mtx.lock().unwrap();
+        let mut state_machine = self.state_machine.lock().unwrap();
+        // SAFETY: No preconditions for this function
+        unsafe { rcl_lifecycle_state_machine_fini(&mut *state_machine, &mut *node).ok().unwrap();}
+    }
 }
 
 impl Eq for LifecycleNode {}
@@ -303,12 +277,107 @@ impl LifecycleNode {
         &self,
         header: &rmw_request_id_t,
         req: &ChangeState_Request,
-        resp: Arc<ChangeState_Response>
+        resp: &mut Arc<Mutex<ChangeState_Response>>
     ) -> Result<(), RclrsError> {
-        // rcl_lifecycle_state_machine_is_initialized(self.)
+        let state_machine = &*self.state_machine.lock().unwrap();
+        // SAFETY: No preconditions for this function.
+        unsafe { rcl_lifecycle_state_machine_is_initialized(state_machine).ok()? };
+        let mut transition_id = req.transition.id;
+        
+        // If there's a label attached to the request, we check the transition attached to this label.
+        // We can't compare the id of the looked up transition any further because ROS 2 service call
+        // sets all integers to zero by default. That means if we call ROS 2 service call:
+        // ... {transition: {label: shutdown}}
+        // the id of the request is 0 (zero) whereas the id from the looked up transition can be different.
+        // The result of this is that the label takes precedence over the ID.
+        if !req.transition.label.is_empty() {
+            // This should be safe to unwrap, since the label originated in C/C++
+            let label_cstr = CString::new(req.transition.label.clone()).unwrap();
+            // SAFETY: No preconditions for this function - however it may return null
+            let rcl_transition = unsafe {
+                rcl_lifecycle_get_transition_by_label(state_machine.current_state, label_cstr.as_ptr())
+            };
+            if rcl_transition.is_null() {
+                let mut response = resp.lock().unwrap();
+                response.success = false;
+                return Ok(());
+            }
+            transition_id = unsafe { (*rcl_transition).id as u8 };
+        }
+
         Ok(())
     }
 
+    fn change_state(&mut self, transition_id: u8) -> Result<Transition, RclrsError> {
+        // Make sure that the state machine is initialized before doing anything
+        let mut state_machine = self.state_machine.lock().unwrap();
+        // SAFETY: No preconditions for this function
+        unsafe {
+            rcl_lifecycle_state_machine_is_initialized(&*state_machine).ok()?;
+        }
+        
+        let mut publish_update = true;
+        // Keep the initial state to pass to a transition callback
+        let mut initial_state = state_machine.current_state;
+        // SAFETY: The state machine has been checked to be initialized by this point, and is 
+        // therefore not null. As for the pointer cast, it's as safe as the rclcpp version. A
+        // better method of handling state will probably need to be devised later on, though.
+        let initial_state = unsafe { &State::from_raw(initial_state as *mut rcl_lifecycle_state_s) };
+
+        // SAFETY: The state machine has been checked to be initialized by this point
+        unsafe { rcl_lifecycle_trigger_transition_by_id(&mut *state_machine, transition_id, publish_update).ok()? };
+
+        let get_label_for_return_code = |cb_return_code: &Transition| {
+            let cb_id = cb_return_code.id;
+            if cb_id == Transition::TRANSITION_CALLBACK_SUCCESS {
+                return "transition_success";
+            } else if cb_id == Transition::TRANSITION_CALLBACK_FAILURE {
+                return "transition_failure";
+            } else {
+                return "transition_error";
+            }
+        };
+
+        // SAFETY: The state machine is not null, since it's initialized
+        let cb_return_code = self.execute_callback(unsafe { (*state_machine.current_state).id }, initial_state);
+        let transition_label = get_label_for_return_code(&cb_return_code);
+        let transition_label_cstr = CString::new(transition_label).unwrap(); // Should be fine, since the strings are known to be valid CStrings
+
+        // Safety: The state machine is not null, since it's initialized
+        unsafe { rcl_lifecycle_trigger_transition_by_label(&mut *state_machine as *mut rcl_lifecycle_state_machine_s, transition_label_cstr.as_ptr(), publish_update).ok()? };
+
+        Ok(cb_return_code)
+
+    }
+
+    fn execute_callback(&self, cb_id: u8, previous_state: &State) -> Transition {
+        match cb_id {
+            lifecycle_msgs::msg::State::TRANSITION_STATE_ACTIVATING => {
+                let activate = self.on_activate.lock().unwrap();
+                (activate)(previous_state)
+            },
+            lifecycle_msgs::msg::State::TRANSITION_STATE_CONFIGURING => {
+                let configure = self.on_configure.lock().unwrap();
+                (configure)(previous_state)
+            },
+            lifecycle_msgs::msg::State::TRANSITION_STATE_CLEANINGUP => {
+                let cleanup = self.on_cleanup.lock().unwrap();
+                (cleanup)(previous_state)
+            },
+            lifecycle_msgs::msg::State::TRANSITION_STATE_DEACTIVATING => {
+                let deactivate = self.on_deactivate.lock().unwrap();
+                (deactivate)(previous_state)
+            },
+            lifecycle_msgs::msg::State::TRANSITION_STATE_SHUTTINGDOWN => {
+                let shutdown = self.on_shutdown.lock().unwrap();
+                (shutdown)(previous_state)
+            },
+            _ => {
+                let error_handling = self.on_error.lock().unwrap();
+                (error_handling)(previous_state)
+            }
+        }
+    }
     /// Creates a [`LifecycleNodeBuilder`][1] with the given name.
     /// 
     /// Convenience function equivalent to [`LifecycleNodeBuilder::new()`][2].

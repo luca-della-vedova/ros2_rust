@@ -19,7 +19,7 @@ use std::sync::{Arc, Mutex};
 
 use rosidl_runtime_rs::{RmwMessage, Service};
 
-use crate::vendor::lifecycle_msgs;
+use crate::vendor::{lifecycle_msgs, rcl_interfaces};
 use crate::{rcl_bindings::*, Context, RclrsError, ToResult, resolve_parameter_overrides};
 use crate::lifecycle_node::{call_string_getter_with_handle, LifecycleNode};
 
@@ -222,14 +222,8 @@ impl LifecycleNodeBuilder {
             ).ok()?;
         }
 
-        if self.enable_communication_interface {
-            // Change State
-            {
 
-            }
-        }
-
-        Ok(LifecycleNode {
+        let mut lifecycle_node = LifecycleNode {
             rcl_node_mtx,
             rcl_context_mtx: self.context.clone(),
             clients: vec![],
@@ -244,7 +238,17 @@ impl LifecycleNodeBuilder {
             on_shutdown: Mutex::new(on_shutdown),
             state_machine,
             _parameter_map,
-        })
+        };
+        
+        
+        if self.enable_communication_interface {
+            // Change State
+            {
+
+            }
+        }
+
+        Ok(lifecycle_node)
     }
     
 
