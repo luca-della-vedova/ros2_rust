@@ -17,7 +17,7 @@ use std::{ffi::{CString, c_void, CStr}, mem::size_of, sync::{Arc, Mutex}};
 
 use crate::{rcl_bindings::*, RclrsError, RclReturnCode, error::ToResult};
 
-pub(crate) struct State {
+pub struct State {
     id: u8,
     label: CString,
     allocator: rcutils_allocator_t,
