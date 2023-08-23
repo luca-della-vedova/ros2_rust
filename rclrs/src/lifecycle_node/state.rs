@@ -19,7 +19,7 @@ use crate::{rcl_bindings::*, RclrsError, RclReturnCode, error::ToResult};
 
 pub struct State {
     id: u8,
-    label: CString,
+    label: String,
     allocator: rcutils_allocator_t,
     state_handle: Arc<Mutex<*mut rcl_lifecycle_state_t>>,
 }
@@ -54,9 +54,9 @@ impl State {
                 }
             )};
             
-            // SAFETY: state_handle has already been allocated by this point, and has checked to be non-null
+            // SAFETY: state_handle has already been allocated by this point, and has been checked to be non-null
             rcl_lifecycle_state_init(state_handle, id, state_label.as_c_str().as_ptr(), &allocator).ok()?;
-            Ok(State { id, label: state_label, allocator, state_handle: Arc::new(Mutex::new(state_handle)) })
+            Ok(State { id, label: state_label.to_string_lossy().to_string(), allocator, state_handle: Arc::new(Mutex::new(state_handle)) })
         }
     }
 
@@ -70,7 +70,7 @@ impl State {
         Self {
             // SAFETY: rcl_lifecycle_state_handle must not be null - see safety comment for the function
             id: (*rcl_lifecycle_state_handle).id,
-            label,
+            label: label.to_string_lossy().to_string(),
             allocator,
             state_handle: Arc::new(Mutex::new(rcl_lifecycle_state_handle)),
         }
@@ -80,8 +80,8 @@ impl State {
         self.id
     }
 
-    pub fn label(&self) -> Result<String, std::str::Utf8Error>{
-        self.label.to_str().map(|x| x.to_owned())
+    pub fn label(&self) -> &str {
+        self.label.as_ref()
     }
 
     pub fn reset(&mut self) -> Result<(), RclrsError> {

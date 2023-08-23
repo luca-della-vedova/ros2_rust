@@ -17,6 +17,7 @@ mod lifecycle_builder;
 mod lifecycle_graph;
 mod state_machine;
 mod state;
+mod transition;
 
 use std::{os::raw::c_char, ffi::{CStr, CString}, sync::{Arc, Mutex, Weak}, fmt, error::Error};
 use crate::{rcl_bindings::*, ClientBase, GuardCondition, ServiceBase, SubscriptionBase, ParameterOverrideMap, Context, RclrsError, Client, QoSProfile, Publisher,  Subscription, SubscriptionCallback, vendor::lifecycle_msgs::{self, srv::{ChangeState_Request, ChangeState_Response, GetState_Request, GetState_Response, GetAvailableStates_Request, GetAvailableStates_Response, GetAvailableTransitions_Request, GetAvailableTransitions_Response}}, ToResult};
@@ -529,6 +530,52 @@ impl LifecycleNode {
         }
     
         Ok(states)
+    }
+
+    pub fn get_available_transitions(&self) -> Result<Vec<transition::Transition>, RclrsError> {
+        // Make sure that the state machine is initialized before doing anything
+        let state_machine = self.state_machine.lock().unwrap();
+        // SAFETY: No preconditions for this function
+        unsafe {
+            rcl_lifecycle_state_machine_is_initialized(&*state_machine).ok()?;
+        }
+
+        let mut transitions = Vec::<transition::Transition>::new();
+
+        // SAFETY: The state machine has been confirmed to be initialized at this point, so the
+        // pointer should not be null
+        let transitions_size = unsafe { (*state_machine.current_state).valid_transition_size as isize };
+        for i in 0..transitions_size {
+            // SAFETY: The state machine has been confirmed to be initialized at this point, so the
+            // pointer should not be null
+            let available_transition = unsafe { transition::Transition::from_raw((*state_machine.current_state).valid_transitions.offset(i)) };
+            transitions.push(available_transition);
+        }
+
+        Ok(transitions)
+    } 
+
+    pub fn get_transition_graph(&self) -> Result<Vec<transition::Transition>, RclrsError> {
+        // Make sure that the state machine is initialized before doing anything
+        let state_machine = self.state_machine.lock().unwrap();
+        // SAFETY: No preconditions for this function
+        unsafe {
+            rcl_lifecycle_state_machine_is_initialized(&*state_machine).ok()?;
+        }
+
+        let mut transitions = Vec::<transition::Transition>::new();
+
+        // SAFETY: The state machine has been confirmed to be initialized at this point, so the
+        // pointer should not be null
+        let transitions_size = state_machine.transition_map.transitions_size as isize;
+        for i in 0..transitions_size {
+            // SAFETY: The state machine has been confirmed to be initialized at this point, so the
+            // pointer should not be null
+            let available_transition = unsafe { transition::Transition::from_raw(state_machine.transition_map.transitions.offset(i)) };
+            transitions.push(available_transition);
+        }
+
+        Ok(transitions)
     }
 
     pub fn change_state(&mut self, transition_id: u8) -> Result<Transition, RclrsError> {
