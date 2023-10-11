@@ -24,22 +24,24 @@ fn main() {
     let mut builder = bindgen::Builder::default()
         .header(BINDGEN_WRAPPER)
         .derive_copy(false)
-        .allowlist_recursively(true)
-        .allowlist_type("lifecycle_.*")
         .allowlist_type("rcl_.*")
         .allowlist_type("rmw_.*")
         .allowlist_type("rcutils_.*")
         .allowlist_type("rosidl_.*")
-        .allowlist_function("lifecycle_.*")
         .allowlist_function("rcl_.*")
         .allowlist_function("rmw_.*")
         .allowlist_function("rcutils_.*")
         .allowlist_function("rosidl_.*")
-        .allowlist_var("lifecycle_.*")
         .allowlist_var("rcl_.*")
         .allowlist_var("rmw_.*")
         .allowlist_var("rcutils_.*")
         .allowlist_var("rosidl_.*")
+        // Note(luca-della-vedova): We need to blocklist this specific function because bindgen
+        // generates it when generating bindings for the datatypes here
+        // https://github.com/ros2/rcl/blob/e37d7f8532c287df0fd8d3727677f5dde20dd5f3/rcl_lifecycle/include/rcl_lifecycle/data_types.h#L90
+        // This is OK since the function is provided by the vendored API generated when parsing the
+        // `lifecycle_msgs` package.
+        .blocklist_function("rosidl_typesupport_c__get_message_type_support_handle__lifecycle_msgs__msg__TransitionEvent")
         .layout_tests(false)
         .default_enum_style(bindgen::EnumVariation::Rust {
             non_exhaustive: false,
