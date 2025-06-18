@@ -12,8 +12,9 @@ use std::{
 };
 
 use rosidl_runtime_rs::RmwMessage;
-use crate::rcl_bindings::rosidl_typesupport_introspection_c__MessageMembers_s as rosidl_message_members_t;
-use crate::rcl_bindings::*;
+use crate::rcl_bindings::{
+    rosidl_typesupport_introspection_c__MessageMembers_s as rosidl_message_members_t, *,
+};
 
 mod error;
 mod message_structure;
@@ -408,11 +409,10 @@ impl DynamicMessage {
 mod tests {
     use super::*;
 
-    fn assert_send<T: Send>() {}
-    fn assert_sync<T: Sync>() {}
-
     #[test]
-    fn all_types_are_sync_and_send() {
+    fn traits() {
+        use crate::test_helpers::*;
+
         assert_send::<DynamicMessageMetadata>();
         assert_sync::<DynamicMessageMetadata>();
         assert_send::<DynamicMessage>();

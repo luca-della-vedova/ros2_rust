@@ -1,8 +1,11 @@
-use std::ffi::CStr;
-use std::sync::Arc;
+use std::{ffi::CStr, sync::Arc};
 
-use crate::rcl_bindings::*;
-use crate::{ParameterRange, ParameterRanges, ParameterValueError};
+use crate::{
+    parameter::{ParameterRange, ParameterRanges},
+    rcl_bindings::*,
+    vendor::rcl_interfaces::msg::rmw::{ParameterType, ParameterValue as RmwParameterValue},
+    ParameterValueError,
+};
 
 /// A parameter value.
 ///
@@ -319,6 +322,116 @@ impl ParameterVariant for ParameterValue {
     }
 }
 
+impl From<ParameterValue> for RmwParameterValue {
+    fn from(value: ParameterValue) -> Self {
+        match value {
+            ParameterValue::Bool(v) => RmwParameterValue {
+                type_: ParameterType::PARAMETER_BOOL,
+                bool_value: v,
+                ..Default::default()
+            },
+            ParameterValue::Integer(v) => RmwParameterValue {
+                type_: ParameterType::PARAMETER_INTEGER,
+                integer_value: v,
+                ..Default::default()
+            },
+            ParameterValue::Double(v) => RmwParameterValue {
+                type_: ParameterType::PARAMETER_DOUBLE,
+                double_value: v,
+                ..Default::default()
+            },
+            ParameterValue::String(v) => RmwParameterValue {
+                type_: ParameterType::PARAMETER_STRING,
+                string_value: v.into(),
+                ..Default::default()
+            },
+            ParameterValue::ByteArray(v) => RmwParameterValue {
+                type_: ParameterType::PARAMETER_BYTE_ARRAY,
+                byte_array_value: (*v).into(),
+                ..Default::default()
+            },
+            ParameterValue::BoolArray(v) => RmwParameterValue {
+                type_: ParameterType::PARAMETER_BOOL_ARRAY,
+                bool_array_value: (*v).into(),
+                ..Default::default()
+            },
+            ParameterValue::IntegerArray(v) => RmwParameterValue {
+                type_: ParameterType::PARAMETER_INTEGER_ARRAY,
+                integer_array_value: (*v).into(),
+                ..Default::default()
+            },
+            ParameterValue::DoubleArray(v) => RmwParameterValue {
+                type_: ParameterType::PARAMETER_DOUBLE_ARRAY,
+                double_array_value: (*v).into(),
+                ..Default::default()
+            },
+            ParameterValue::StringArray(v) => RmwParameterValue {
+                type_: ParameterType::PARAMETER_STRING_ARRAY,
+                string_array_value: v.iter().map(|v| v.clone().into()).collect(),
+                ..Default::default()
+            },
+        }
+    }
+}
+
+/// An error that occured when trying to convert a parameter from an
+/// `rcl_interfaces::msg::ParameterValue`
+#[derive(Debug)]
+pub enum RmwParameterConversionError {
+    /// The parameter type was not valid.
+    InvalidParameterType,
+}
+
+impl std::fmt::Display for RmwParameterConversionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RmwParameterConversionError::InvalidParameterType => {
+                write!(f, "the parameter type was not valid")
+            }
+        }
+    }
+}
+
+impl std::error::Error for RmwParameterConversionError {}
+
+impl TryFrom<RmwParameterValue> for ParameterValue {
+    type Error = RmwParameterConversionError;
+
+    fn try_from(param: RmwParameterValue) -> Result<Self, Self::Error> {
+        // TODO(luca) how to deal with PARAMETER_NOT_SET? Should we allow service calls to unset
+        // parameters?
+        match param.type_ {
+            ParameterType::PARAMETER_BOOL => Ok(ParameterValue::Bool(param.bool_value)),
+            ParameterType::PARAMETER_INTEGER => Ok(ParameterValue::Integer(param.integer_value)),
+            ParameterType::PARAMETER_DOUBLE => Ok(ParameterValue::Double(param.double_value)),
+            ParameterType::PARAMETER_STRING => Ok(ParameterValue::String(
+                param.string_value.to_string().into(),
+            )),
+            ParameterType::PARAMETER_BYTE_ARRAY => {
+                Ok(ParameterValue::ByteArray((*param.byte_array_value).into()))
+            }
+            ParameterType::PARAMETER_BOOL_ARRAY => {
+                Ok(ParameterValue::BoolArray((*param.bool_array_value).into()))
+            }
+            ParameterType::PARAMETER_INTEGER_ARRAY => Ok(ParameterValue::IntegerArray(
+                (*param.integer_array_value).into(),
+            )),
+            ParameterType::PARAMETER_DOUBLE_ARRAY => Ok(ParameterValue::DoubleArray(
+                (*param.double_array_value).into(),
+            )),
+            ParameterType::PARAMETER_STRING_ARRAY => Ok(ParameterValue::StringArray(
+                param
+                    .string_array_value
+                    .iter()
+                    .map(|s| s.to_string().into())
+                    .collect::<Vec<_>>()
+                    .into(),
+            )),
+            _ => Err(RmwParameterConversionError::InvalidParameterType),
+        }
+    }
+}
+
 impl ParameterValue {
     // Panics if the rcl_variant_t does not have exactly one field set.
     //
@@ -360,25 +473,23 @@ impl ParameterValue {
             ParameterValue::String(s.into())
         } else if !var.byte_array_value.is_null() {
             let rcl_byte_array = &*var.byte_array_value;
-            let slice = std::slice::from_raw_parts(rcl_byte_array.values, rcl_byte_array.size);
+            let slice = rcl_from_raw_parts(rcl_byte_array.values, rcl_byte_array.size);
             ParameterValue::ByteArray(slice.into())
         } else if !var.bool_array_value.is_null() {
             let rcl_bool_array = &*var.bool_array_value;
-            let slice = std::slice::from_raw_parts(rcl_bool_array.values, rcl_bool_array.size);
+            let slice = rcl_from_raw_parts(rcl_bool_array.values, rcl_bool_array.size);
             ParameterValue::BoolArray(slice.into())
         } else if !var.integer_array_value.is_null() {
             let rcl_integer_array = &*var.integer_array_value;
-            let slice =
-                std::slice::from_raw_parts(rcl_integer_array.values, rcl_integer_array.size);
+            let slice = rcl_from_raw_parts(rcl_integer_array.values, rcl_integer_array.size);
             ParameterValue::IntegerArray(slice.into())
         } else if !var.double_array_value.is_null() {
             let rcl_double_array = &*var.double_array_value;
-            let slice = std::slice::from_raw_parts(rcl_double_array.values, rcl_double_array.size);
+            let slice = rcl_from_raw_parts(rcl_double_array.values, rcl_double_array.size);
             ParameterValue::DoubleArray(slice.into())
         } else if !var.string_array_value.is_null() {
             let rcutils_string_array = &*var.string_array_value;
-            let slice =
-                std::slice::from_raw_parts(rcutils_string_array.data, rcutils_string_array.size);
+            let slice = rcl_from_raw_parts(rcutils_string_array.data, rcutils_string_array.size);
             let strings = slice
                 .iter()
                 .map(|&ptr| {
@@ -392,12 +503,41 @@ impl ParameterValue {
             unreachable!()
         }
     }
+
+    pub(crate) fn rcl_parameter_type(&self) -> u8 {
+        match self {
+            ParameterValue::Bool(_) => ParameterType::PARAMETER_BOOL,
+            ParameterValue::Integer(_) => ParameterType::PARAMETER_INTEGER,
+            ParameterValue::Double(_) => ParameterType::PARAMETER_DOUBLE,
+            ParameterValue::String(_) => ParameterType::PARAMETER_STRING,
+            ParameterValue::ByteArray(_) => ParameterType::PARAMETER_BYTE_ARRAY,
+            ParameterValue::BoolArray(_) => ParameterType::PARAMETER_BOOL_ARRAY,
+            ParameterValue::IntegerArray(_) => ParameterType::PARAMETER_INTEGER_ARRAY,
+            ParameterValue::DoubleArray(_) => ParameterType::PARAMETER_DOUBLE_ARRAY,
+            ParameterValue::StringArray(_) => ParameterType::PARAMETER_STRING_ARRAY,
+        }
+    }
+
+    /// Returns the `ParameterKind` for the parameter.
+    pub(crate) fn kind(&self) -> ParameterKind {
+        match self {
+            ParameterValue::Bool(_) => ParameterKind::Bool,
+            ParameterValue::Integer(_) => ParameterKind::Integer,
+            ParameterValue::Double(_) => ParameterKind::Double,
+            ParameterValue::String(_) => ParameterKind::String,
+            ParameterValue::ByteArray(_) => ParameterKind::ByteArray,
+            ParameterValue::BoolArray(_) => ParameterKind::BoolArray,
+            ParameterValue::IntegerArray(_) => ParameterKind::IntegerArray,
+            ParameterValue::DoubleArray(_) => ParameterKind::DoubleArray,
+            ParameterValue::StringArray(_) => ParameterKind::StringArray,
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Context, RclrsError, ToResult};
+    use crate::{Context, InitOptions, RclrsError, ToResult};
 
     // TODO(luca) tests for all from / to ParameterVariant functions
 
@@ -425,15 +565,18 @@ mod tests {
             ),
         ];
         for pair in input_output_pairs {
-            let ctx = Context::new([
-                String::from("--ros-args"),
-                String::from("-p"),
-                format!("foo:={}", pair.0),
-            ])?;
+            let ctx = Context::new(
+                [
+                    String::from("--ros-args"),
+                    String::from("-p"),
+                    format!("foo:={}", pair.0),
+                ],
+                InitOptions::default(),
+            )?;
             let mut rcl_params = std::ptr::null_mut();
             unsafe {
                 rcl_arguments_get_param_overrides(
-                    &ctx.rcl_context_mtx.lock().unwrap().global_arguments,
+                    &ctx.handle.rcl_context.lock().unwrap().global_arguments,
                     &mut rcl_params,
                 )
                 .ok()?;
